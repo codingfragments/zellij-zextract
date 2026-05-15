@@ -6,8 +6,9 @@ license.workspace = true
 description = "Spike A: verify write_chars_to_pane_id works from plugin to sibling shell pane"
 publish = false
 
-[lib]
-crate-type = ["cdylib"]
+[[bin]]
+name = "spike_a_write_chars"
+path = "src/main.rs"
 
 [dependencies]
 zellij-tile.workspace = true

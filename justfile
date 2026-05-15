@@ -15,11 +15,12 @@ build-a:
 build-b:
     cargo build --release --target wasm32-wasip1 -p spike-b-ratatui
 
-# Symlink both spike wasms into ~/.config/zellij/plugins/
+# Copy both spike wasms into ~/.config/zellij/plugins/
 install: build
     mkdir -p {{plugin_dir}}
-    ln -sf $(pwd)/target/wasm32-wasip1/release/spike_a_write_chars.wasm {{plugin_dir}}/spike-a.wasm
-    ln -sf $(pwd)/target/wasm32-wasip1/release/spike_b_ratatui.wasm {{plugin_dir}}/spike-b.wasm
+    rm -f {{plugin_dir}}/spike-a.wasm {{plugin_dir}}/spike-b.wasm
+    cp -f $(pwd)/target/wasm32-wasip1/release/spike_a_write_chars.wasm {{plugin_dir}}/spike-a.wasm
+    cp -f $(pwd)/target/wasm32-wasip1/release/spike_b_ratatui.wasm {{plugin_dir}}/spike-b.wasm
     @echo "Installed:"
     @ls -la {{plugin_dir}}/spike-a.wasm {{plugin_dir}}/spike-b.wasm
 

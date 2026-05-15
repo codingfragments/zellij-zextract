@@ -6,8 +6,9 @@ license.workspace = true
 description = "Spike B: verify ratatui widgets + Buffer render correctly inside a Zellij WASI plugin (no crossterm — own the I/O)"
 publish = false
 
-[lib]
-crate-type = ["cdylib"]
+[[bin]]
+name = "spike_b_ratatui"
+path = "src/main.rs"
 
 [dependencies]
 zellij-tile.workspace = true
