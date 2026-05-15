@@ -360,6 +360,7 @@ fn type_color(ty: MatchType) -> Color {
         MatchType::Uuid => Color::Magenta,
         MatchType::QuotedString => Color::Gray,
         MatchType::Command => Color::LightMagenta,
+        MatchType::Secret => Color::LightRed,
     }
 }
 

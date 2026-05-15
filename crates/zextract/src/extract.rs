@@ -33,6 +33,7 @@ pub enum MatchType {
     Uuid,
     QuotedString,
     Command,
+    Secret,
 }
 
 impl MatchType {
@@ -47,6 +48,7 @@ impl MatchType {
             MatchType::Uuid => "uuid",
             MatchType::QuotedString => "quote",
             MatchType::Command => "cmd",
+            MatchType::Secret => "secret",
         }
     }
 }
@@ -64,7 +66,7 @@ pub fn extract(text: &str) -> Vec<Match> {
     all.extend(crate::pattern::uuid::extract(text));
     all.extend(crate::pattern::quoted::extract(text));
     all.extend(crate::pattern::command::extract(text));
-    // future patterns (secret) appended here.
+    all.extend(crate::pattern::secret::extract(text));
 
     dedup_keep_latest(all)
 }

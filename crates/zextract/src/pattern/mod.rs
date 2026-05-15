@@ -10,6 +10,7 @@ pub mod file;
 pub mod ipv4;
 pub mod ipv6;
 pub mod quoted;
+pub mod secret;
 pub mod sha;
 pub mod url;
 pub mod uuid;
