@@ -32,6 +32,7 @@ pub enum MatchType {
     Ipv6,
     Uuid,
     QuotedString,
+    Command,
 }
 
 impl MatchType {
@@ -45,6 +46,7 @@ impl MatchType {
             MatchType::Ipv6 => "ipv6",
             MatchType::Uuid => "uuid",
             MatchType::QuotedString => "quote",
+            MatchType::Command => "cmd",
         }
     }
 }
@@ -61,7 +63,8 @@ pub fn extract(text: &str) -> Vec<Match> {
     all.extend(crate::pattern::ipv6::extract(text));
     all.extend(crate::pattern::uuid::extract(text));
     all.extend(crate::pattern::quoted::extract(text));
-    // future patterns (command, secret) appended here.
+    all.extend(crate::pattern::command::extract(text));
+    // future patterns (secret) appended here.
 
     dedup_keep_latest(all)
 }

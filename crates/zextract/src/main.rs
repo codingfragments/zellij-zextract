@@ -359,6 +359,7 @@ fn type_color(ty: MatchType) -> Color {
         MatchType::Ipv6 => Color::Cyan,
         MatchType::Uuid => Color::Magenta,
         MatchType::QuotedString => Color::Gray,
+        MatchType::Command => Color::LightMagenta,
     }
 }
 

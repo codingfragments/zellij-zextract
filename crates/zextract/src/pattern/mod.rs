@@ -4,6 +4,7 @@
 //! span. `extract::extract` calls all of them and dedupes by
 //! `(type, raw)` keeping the latest occurrence (per spec Q25).
 
+pub mod command;
 pub mod diagnostic;
 pub mod file;
 pub mod ipv4;
