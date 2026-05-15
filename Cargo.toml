@@ -11,7 +11,7 @@ license = "MIT"
 repository = "https://github.com/codingfragments/zellij-zextract"
 
 [workspace.dependencies]
-zellij-tile = "0.42.0"
+zellij-tile = "0.44.3"
 
 [profile.release]
 opt-level = "z"
