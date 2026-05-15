@@ -26,9 +26,12 @@ pub struct Match {
 pub enum MatchType {
     Url,
     File,
+    Diagnostic,
     Sha,
     Ipv4,
+    Ipv6,
     Uuid,
+    QuotedString,
 }
 
 impl MatchType {
@@ -36,9 +39,12 @@ impl MatchType {
         match self {
             MatchType::Url => "url",
             MatchType::File => "file",
+            MatchType::Diagnostic => "diag",
             MatchType::Sha => "sha",
             MatchType::Ipv4 => "ipv4",
+            MatchType::Ipv6 => "ipv6",
             MatchType::Uuid => "uuid",
+            MatchType::QuotedString => "quote",
         }
     }
 }
@@ -49,10 +55,13 @@ pub fn extract(text: &str) -> Vec<Match> {
     let mut all: Vec<Match> = Vec::new();
     all.extend(crate::pattern::url::extract(text));
     all.extend(crate::pattern::file::extract(text));
+    all.extend(crate::pattern::diagnostic::extract(text));
     all.extend(crate::pattern::sha::extract(text));
     all.extend(crate::pattern::ipv4::extract(text));
+    all.extend(crate::pattern::ipv6::extract(text));
     all.extend(crate::pattern::uuid::extract(text));
-    // future patterns (diagnostic, ipv6, quoted, command, secret) appended here.
+    all.extend(crate::pattern::quoted::extract(text));
+    // future patterns (command, secret) appended here.
 
     dedup_keep_latest(all)
 }
