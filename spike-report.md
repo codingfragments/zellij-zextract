@@ -16,26 +16,29 @@ just build         # cargo build --release --target wasm32-wasip1
 just install       # symlinks both .wasm into ~/.config/zellij/plugins/
 ```
 
-Add temporary bindings to `~/.config/zellij/config.kdl` (under your
-preferred mode block, e.g. `tmux` or `shared_except`):
+Add temporary bindings to `~/.config/zellij/config.kdl` inside a mode block
+(e.g. `tmux { ... }` or `shared_except "normal" { ... }`). Zellij uses
+single-key binds per mode; chord-style `bind "Ctrl s" "2"` is not valid
+syntax. Multiple action statements within a bind are semicolon-separated.
 
 ```kdl
-bind "Ctrl s" "1" {
+// Inside your tmux (or other) mode block:
+bind "1" {
     LaunchOrFocusPlugin "file:~/.config/zellij/plugins/spike-a.wasm" {
         floating true
-    }
+    };
     SwitchToMode "locked"
 }
-bind "Ctrl s" "2" {
+bind "2" {
     LaunchOrFocusPlugin "file:~/.config/zellij/plugins/spike-b.wasm" {
         floating true
-    }
+    };
     SwitchToMode "locked"
 }
 ```
 
-Reload Zellij config (or restart the session) and grant permissions on
-first launch.
+Reload Zellij (`zellij action reload-config` or restart the session) and
+grant permissions on first launch.
 
 ## Spike A — `write_chars_to_pane_id`
 
