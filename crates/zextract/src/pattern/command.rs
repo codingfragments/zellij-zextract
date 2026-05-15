@@ -166,10 +166,42 @@ fn match_prompt(line: &str) -> Option<(usize, &str)> {
 }
 
 /// Return the byte column where a leftmost trigger occurs in `line`, or
-/// None if no trigger fires.
+/// None if no trigger fires. Filters out triggers that aren't in a
+/// command-start context — \b alone matches `sh` inside `install.sh`
+/// (the `.` is a non-word char so a word boundary exists), so we
+/// additionally require the byte preceding the trigger to be a real
+/// command-start (whitespace, line start, shell operator, ...).
 fn match_exec(line: &str) -> Option<usize> {
     let re = trigger_regex();
-    re.find(line).map(|m| m.start())
+    for m in re.find_iter(line) {
+        let start = m.start();
+        let prev = if start == 0 {
+            None
+        } else {
+            line.as_bytes().get(start - 1).copied()
+        };
+        if ok_command_preceding_byte(prev) {
+            return Some(start);
+        }
+    }
+    None
+}
+
+fn ok_command_preceding_byte(b: Option<u8>) -> bool {
+    match b {
+        None => true,
+        Some(c) if c.is_ascii_whitespace() => true,
+        // Shell separators / operators + prose punctuation that can
+        // precede a command word.
+        Some(
+            b'|' | b';' | b'&' | b'(' | b'[' | b'{' | b'`' | b'$' | b'='
+            | b'>' | b'<' | b'"' | b'\'' | b':' | b','
+        ) => true,
+        // `.` and `/` are explicitly rejected — they signal file-extension
+        // (`install.sh`) or path-component (`/usr/bin/sh`) context, not a
+        // standalone command word.
+        _ => false,
+    }
 }
 
 /// Splice a prompt-anchored command's continuations. Returns
@@ -318,5 +350,31 @@ mod tests {
     fn no_match_in_random_prose() {
         let m = extract("the quick brown fox jumps over the lazy dog");
         assert!(m.is_empty());
+    }
+
+    #[test]
+    fn rejects_trigger_inside_filename() {
+        // `sh` inside `install.sh` must NOT trigger the command pattern —
+        // the trigger is preceded by `.`, signaling a file extension.
+        let m = extract("Downloaded install.sh from the mirror");
+        assert!(m.is_empty(), "false positive: {m:?}");
+    }
+
+    #[test]
+    fn rejects_trigger_inside_path() {
+        // `sh` inside `/usr/bin/sh foo` is preceded by `/` — path
+        // component, not a command word. NOTE: shells DO invoke
+        // /bin/sh via the full path, and our trigger list has it
+        // explicitly, so this is about the bare `sh` at the END of an
+        // arbitrary path, not the literal /bin/sh form.
+        let m = extract("path/to/sh detected");
+        assert!(m.is_empty(), "false positive: {m:?}");
+    }
+
+    #[test]
+    fn still_triggers_after_space() {
+        let m = extract("Run sh -c 'foo' please");
+        assert_eq!(m.len(), 1);
+        assert!(m[0].raw.starts_with("sh"));
     }
 }

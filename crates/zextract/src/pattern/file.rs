@@ -63,6 +63,11 @@ pub fn extract(text: &str) -> Vec<Match> {
             if looks_numeric(&raw) {
                 continue;
             }
+            // Skip numeric ratios like "1/1", "42/100" — common in progress
+            // indicators and fractions, never real paths.
+            if is_numeric_ratio(&raw) {
+                continue;
+            }
 
             let (path_part, line_part, col_part) = split_line_col(&raw);
 
@@ -144,6 +149,19 @@ fn looks_numeric(s: &str) -> bool {
         .all(|c| c.is_ascii_digit() || c == '.' || c == '-')
 }
 
+fn is_numeric_ratio(s: &str) -> bool {
+    // Strings like "1/1", "42/100", "1/2/3" — slash-separated runs of
+    // pure-digit segments. Common in progress indicators ("Loaded 1/1
+    // plugins"), fractions, version-like ratios. Never real paths.
+    let no_suffix = s.split(':').next().unwrap_or(s);
+    if !no_suffix.contains('/') {
+        return false;
+    }
+    no_suffix
+        .split('/')
+        .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_digit()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +227,16 @@ mod tests {
         let m = extract("the value 2.5 is suspect");
         let raws: Vec<_> = m.iter().map(|x| x.raw.as_str()).collect();
         assert!(!raws.contains(&"2.5"));
+    }
+
+    #[test]
+    fn skips_numeric_ratios() {
+        let m = extract("Loaded 1/1 plugins");
+        assert!(m.is_empty(), "got: {:?}", m);
+        let m = extract("Progress: 42/100");
+        assert!(m.iter().all(|x| x.raw != "42/100"));
+        let m = extract("Version 1/2/3");
+        assert!(m.iter().all(|x| x.raw != "1/2/3"));
     }
 
     #[test]
