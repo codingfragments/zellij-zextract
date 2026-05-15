@@ -96,6 +96,90 @@ fn dedup_keep_latest(mut matches: Vec<Match>) -> Vec<Match> {
 }
 
 #[cfg(test)]
+mod fixture_tests {
+    //! Integration coverage: read each fixture file and assert minimum
+    //! counts per type. Lighter than full snapshot diffing (which we'll
+    //! revisit when insta plays nicely with the test environment) but
+    //! catches the regression cases that matter — a pattern silently
+    //! ceasing to match its fixture is exactly what these tests find.
+    use super::*;
+
+    fn count_by_type(text: &str, ty: MatchType) -> usize {
+        extract(text).into_iter().filter(|m| m.ty == ty).count()
+    }
+
+    #[test]
+    fn urls_fixture_has_urls() {
+        let text = include_str!("../tests/fixtures/urls.txt");
+        assert!(count_by_type(text, MatchType::Url) >= 5);
+    }
+
+    #[test]
+    fn files_fixture_has_files() {
+        let text = include_str!("../tests/fixtures/files.txt");
+        assert!(count_by_type(text, MatchType::File) >= 3);
+    }
+
+    #[test]
+    fn diagnostics_fixture_has_diagnostics() {
+        let text = include_str!("../tests/fixtures/diagnostics.txt");
+        assert!(count_by_type(text, MatchType::Diagnostic) >= 2);
+    }
+
+    #[test]
+    fn git_log_fixture_has_shas() {
+        let text = include_str!("../tests/fixtures/git_log.txt");
+        assert!(count_by_type(text, MatchType::Sha) >= 5);
+    }
+
+    #[test]
+    fn commands_fixture_has_commands() {
+        let text = include_str!("../tests/fixtures/commands.txt");
+        assert!(count_by_type(text, MatchType::Command) >= 5);
+    }
+
+    #[test]
+    fn secrets_fixture_has_secrets() {
+        let text = include_str!("../tests/fixtures/secrets.txt");
+        let matches = extract(text);
+        let secrets: Vec<_> = matches.iter().filter(|m| m.ty == MatchType::Secret).collect();
+        assert!(secrets.len() >= 7, "got {} secrets", secrets.len());
+        // Verify a mix of curated formats fired.
+        let formats: std::collections::HashSet<&str> = secrets
+            .iter()
+            .filter_map(|m| m.fields.get("secret_format").map(|s| s.as_str()))
+            .collect();
+        for required in ["jwt", "aws", "github", "gitlab", "stripe", "bearer"] {
+            assert!(formats.contains(required), "missing format: {required}");
+        }
+    }
+
+    #[test]
+    fn realworld_fixture_finds_diverse_types() {
+        let text = include_str!("../tests/fixtures/realworld.txt");
+        let matches = extract(text);
+        let types: std::collections::HashSet<MatchType> =
+            matches.iter().map(|m| m.ty).collect();
+        // Realworld transcript should exercise at least 5 different types.
+        assert!(types.len() >= 5, "got types: {types:?}");
+    }
+
+    #[test]
+    fn adversarial_fixture_rejects_near_misses() {
+        let text = include_str!("../tests/fixtures/adversarial.txt");
+        let matches = extract(text);
+        // No SHA from "12345678" (pure-numeric).
+        assert!(!matches
+            .iter()
+            .any(|m| m.ty == MatchType::Sha && m.raw == "12345678"));
+        // No IPv4 from "999.1.1.1".
+        assert!(!matches
+            .iter()
+            .any(|m| m.ty == MatchType::Ipv4 && m.raw.starts_with("999.")));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

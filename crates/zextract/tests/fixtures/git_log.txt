@@ -1,0 +1,19 @@
+$ git log --oneline -10
+0b0ae16 Merge pull request #2 from codingfragments/phase-1/end-to-end-loop
+2b5d891 Phase 1 fix: dark fg on selection highlight + permission set
+c75a360 Phase 1: bare end-to-end loop — URL picker over scrollback
+bf6f3ff Carry Phase 0 findings into planning.md and CLAUDE.md
+9629791 Merge pull request #1 from codingfragments/phase-0/spikes
+62f0be2 Capture scaffolding lessons in spike-report; add just clear-cache
+c26f962 Convert spike crates from cdylib to bin to expose _start/__main_void
+d28bd86 Bump zellij-tile 0.42.0 → 0.44.3 to match running Zellij 0.44.2 ABI
+
+$ git show c75a360 --stat
+commit c75a360b3f1a4e2d8c5f6a7b9c0d1e2f3a4b5c6d
+Author: Stefan Marx <stefan@example.com>
+Date:   Fri May 15 14:30:00 2026 +0200
+
+    Phase 1: bare end-to-end loop — URL picker over scrollback
+
+ Cargo.toml                 | 12 ++++++
+ crates/zextract/Cargo.toml | 18 +++++++++

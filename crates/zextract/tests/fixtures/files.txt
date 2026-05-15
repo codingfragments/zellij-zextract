@@ -1,0 +1,19 @@
+$ git status
+On branch main
+Changes not staged for commit:
+  modified:   src/main.rs
+  modified:   src/extract.rs
+  modified:   Cargo.toml
+
+$ ls -la ~/dotfiles/zellij/
+total 24
+drwxr-xr-x  4 stefan  staff   128 May 15 16:30 .
+drwxr-xr-x 30 stefan  staff   960 May 15 16:30 ..
+-rw-r--r--  1 stefan  staff  2342 May 15 14:11 config.kdl
+drwxr-xr-x  3 stefan  staff    96 May 15 16:30 plugins
+
+$ rg "TODO" src/
+src/main.rs:142:    // TODO: wire to config in phase 7
+src/extract.rs:84:    // TODO: stop after dedup pass
+
+# Useful read: /etc/passwd and /etc/hosts on Linux.
