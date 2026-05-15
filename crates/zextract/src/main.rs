@@ -36,8 +36,10 @@ register_plugin!(State);
 impl ZellijPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
         request_permission(&[
-            PermissionType::ReadApplicationState,
-            PermissionType::ChangeApplicationState,
+            PermissionType::ReadApplicationState,  // PaneUpdate events
+            PermissionType::ChangeApplicationState, // close_self()
+            PermissionType::ReadPaneContents,       // get_pane_scrollback
+            PermissionType::WriteToClipboard,       // copy_to_clipboard
         ]);
         subscribe(&[
             EventType::Key,
@@ -203,9 +205,13 @@ impl State {
         let list = List::new(items)
             .block(Block::default().borders(Borders::ALL))
             .highlight_style(
+                // Dark fg on light bg — Color::Blue renders as a light blue in
+                // most modern themes (Catppuccin etc.), so white text on it is
+                // washed-out. Rule for the whole UI: every .bg() pairs with an
+                // explicit contrasting .fg(); never inherit fg from theme.
                 Style::default()
                     .bg(Color::Blue)
-                    .fg(Color::White)
+                    .fg(Color::Black)
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("▸ ");
