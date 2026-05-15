@@ -36,3 +36,13 @@ dev-b: build-b
 
 clean:
     cargo clean
+
+# Remove Zellij's cached compiled-module entries for our plugins.
+# Zellij caches by load path, not content hash, so a rebuild does not
+# invalidate the cache. Run after any ABI-affecting change (zellij-tile
+# bump, crate-type change, ...) to force recompile on next launch.
+clear-cache:
+    find "$HOME/Library/Caches/org.Zellij-Contributors.Zellij/" \
+        \( -path '*spike-a*' -o -path '*spike-b*' -o -path '*zextract*' \) \
+        -exec rm -rf {} + 2>/dev/null || true
+    @echo "Cleared zellij compiled-module cache for spike-a, spike-b, zextract."
