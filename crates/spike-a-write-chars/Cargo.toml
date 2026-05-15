@@ -1,0 +1,13 @@
+[package]
+name = "spike-a-write-chars"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Spike A: verify write_chars_to_pane_id works from plugin to sibling shell pane"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zellij-tile.workspace = true

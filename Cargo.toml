@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/spike-a-write-chars",
+    "crates/spike-b-ratatui",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/codingfragments/zellij-zextract"
+
+[workspace.dependencies]
+zellij-tile = "0.42.0"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
