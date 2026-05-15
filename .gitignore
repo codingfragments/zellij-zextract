@@ -3,3 +3,4 @@ target/
 *.wasm
 .DS_Store
 **/.claude/settings.local.json
+.tmuxinator.yml

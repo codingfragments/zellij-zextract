@@ -1,0 +1,9 @@
+$ curl -fsSL https://example.com/install.sh | sudo bash
+downloading from https://github.com/codingfragments/zellij-zextract...
+see https://docs.rs/regex/latest/regex/ for regex syntax.
+news at https://blog.example.com/posts/2026-05-15-zellij-plugins (visited)
+git clone git://git.example.com/repo.git
+ssh user@gateway.example.com via ssh://gateway.example.com:2222
+old protocols still work: ftp://ftp.gnu.org/gnu/ and file:///etc/hosts
+Duplicate URL appears: see https://example.com/install.sh once more for the dedupe test.
+Final note: visit https://example.com/install.sh? to confirm trailing-? gets trimmed.
