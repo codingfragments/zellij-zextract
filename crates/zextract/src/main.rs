@@ -7,6 +7,7 @@
 
 mod extract;
 mod fuzzy;
+mod pattern;
 mod render;
 mod source_pane;
 
