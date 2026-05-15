@@ -4,6 +4,7 @@
 //! span. `extract::extract` calls all of them and dedupes by
 //! `(type, raw)` keeping the latest occurrence (per spec Q25).
 
+pub mod file;
 pub mod url;
 
 /// Trim trailing punctuation that's commonly adjacent to a match in

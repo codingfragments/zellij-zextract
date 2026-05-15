@@ -25,12 +25,14 @@ pub struct Match {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MatchType {
     Url,
+    File,
 }
 
 impl MatchType {
     pub fn tag(self) -> &'static str {
         match self {
             MatchType::Url => "url",
+            MatchType::File => "file",
         }
     }
 }
@@ -40,7 +42,8 @@ impl MatchType {
 pub fn extract(text: &str) -> Vec<Match> {
     let mut all: Vec<Match> = Vec::new();
     all.extend(crate::pattern::url::extract(text));
-    // future patterns (file, sha, diagnostic, ...) appended here.
+    all.extend(crate::pattern::file::extract(text));
+    // future patterns (sha, diagnostic, ...) appended here.
 
     dedup_keep_latest(all)
 }

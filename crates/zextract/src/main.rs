@@ -352,6 +352,7 @@ fn highlight_spans(display: &str, indices: &[u32]) -> Vec<Span<'static>> {
 fn type_color(ty: MatchType) -> Color {
     match ty {
         MatchType::Url => Color::Blue,
+        MatchType::File => Color::Green,
     }
 }
 
