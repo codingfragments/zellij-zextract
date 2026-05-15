@@ -353,6 +353,9 @@ fn type_color(ty: MatchType) -> Color {
     match ty {
         MatchType::Url => Color::Blue,
         MatchType::File => Color::Green,
+        MatchType::Sha => Color::Yellow,
+        MatchType::Ipv4 => Color::Cyan,
+        MatchType::Uuid => Color::Magenta,
     }
 }
 

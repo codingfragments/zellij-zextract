@@ -5,7 +5,10 @@
 //! `(type, raw)` keeping the latest occurrence (per spec Q25).
 
 pub mod file;
+pub mod ipv4;
+pub mod sha;
 pub mod url;
+pub mod uuid;
 
 /// Trim trailing punctuation that's commonly adjacent to a match in
 /// prose but not part of it. Used by URL, file, diagnostic etc.
