@@ -1,13 +1,24 @@
 //! Extraction coordinator. Dispatches the captured scrollback text to
-//! each pattern module, combines results, and resolves overlap per Q25:
+//! each pattern module, combines results, and resolves overlap.
 //!
-//!   - Cross-type overlap: emit all matches.
-//!   - Same-type dedup: keep only the latest occurrence per `(type, raw)`.
-//!   - Within-pattern leftmost-longest: handled inside each pattern.
+//! Overlap policy (per planning.md Q25 + Phase 4 update):
 //!
-//! Output order is **latest-first** (most recent occurrence in the
-//! scrollback ranks ahead of older ones).
+//!   1. Within-pattern: leftmost-longest, handled inside each pattern.
+//!   2. **Pass 1 — same-type dedup**: same `(type, raw)` collapses to one
+//!      match, keeping the latest occurrence (largest `span.0`). Preserves
+//!      recency context.
+//!   3. **Pass 2 — cross-type dedup**: same `raw` from multiple types
+//!      collapses to one match, keeping the one whose type ranks earliest
+//!      in `TYPE_PRIORITY`. Ties (impossible with the static list, but
+//!      possible once Phase 7 KDL config exposes the ordering) go to the
+//!      latest occurrence.
+//!
+//! Output order: **latest-first** (most recent occurrence in the
+//! scrollback ranks ahead of older ones), with picker score bonuses
+//! also derived from `TYPE_PRIORITY` (front-of-list = positive bonus,
+//! tail = negative).
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +64,45 @@ impl MatchType {
     }
 }
 
+/// Type-priority list — front of list = highest priority. Drives **both**:
+///
+///   - Pass 2 cross-type dedup-by-raw (`dedup_by_raw_priority`)
+///   - Picker score bonus (`type_priority_bonus`)
+///
+/// Reordering this list is the single edit that changes both behaviors
+/// at once. Phase 7 KDL config will expose this as a user-tweakable
+/// ordered list of type names.
+pub const TYPE_PRIORITY: &[MatchType] = &[
+    MatchType::Url,
+    MatchType::Diagnostic,
+    MatchType::File,
+    MatchType::Uuid,
+    MatchType::Sha,
+    MatchType::Ipv4,
+    MatchType::Ipv6,
+    MatchType::Command,
+    MatchType::Secret, // entropy fallback is broad; let specific types win
+    MatchType::QuotedString,
+];
+
+/// Position in `TYPE_PRIORITY`. Lower number = higher priority.
+/// Returns `TYPE_PRIORITY.len()` for unknown types (puts them last).
+fn type_priority_index(ty: MatchType) -> usize {
+    TYPE_PRIORITY
+        .iter()
+        .position(|&t| t == ty)
+        .unwrap_or(TYPE_PRIORITY.len())
+}
+
+/// Picker-rank score bonus derived from priority list position.
+/// Symmetric around the middle: front of list = positive bonus,
+/// middle = 0, tail = negative. With 10 types, range is +5 to -4.
+pub fn type_priority_bonus(ty: MatchType) -> i32 {
+    let n = TYPE_PRIORITY.len() as i32;
+    let pos = type_priority_index(ty) as i32;
+    n / 2 - pos
+}
+
 /// Run all patterns against `text` and return the combined, deduped,
 /// recency-ordered matches.
 pub fn extract(text: &str) -> Vec<Match> {
@@ -68,7 +118,8 @@ pub fn extract(text: &str) -> Vec<Match> {
     all.extend(crate::pattern::command::extract(text));
     all.extend(crate::pattern::secret::extract(text));
 
-    dedup_keep_latest(all)
+    let pass1 = dedup_keep_latest(all);
+    dedup_by_raw_priority(pass1)
 }
 
 /// Take the last `n` lines of a scrollback capture. Phase 1 hardcoded
@@ -80,8 +131,8 @@ pub fn take_recent(text: &str, n: usize) -> String {
     lines[start..].join("\n")
 }
 
-/// Dedup by `(type, raw)` keeping the latest occurrence (largest
-/// `span.0`). Returns matches in latest-first order.
+/// Pass 1: dedup by `(type, raw)` keeping the latest occurrence
+/// (largest `span.0`). Returns matches in latest-first order.
 fn dedup_keep_latest(mut matches: Vec<Match>) -> Vec<Match> {
     // Sort ascending by span.0 so iterating reverse yields latest-first.
     matches.sort_by_key(|m| m.span.0);
@@ -92,6 +143,42 @@ fn dedup_keep_latest(mut matches: Vec<Match>) -> Vec<Match> {
             out.push(m);
         }
     }
+    out
+}
+
+/// Pass 2: dedup by `raw` alone. When multiple types match the same
+/// raw text, keep the one with the highest priority (front-of-list in
+/// `TYPE_PRIORITY`). Ties resolved by recency (larger `span.0` wins).
+///
+/// Returns matches in latest-first order.
+fn dedup_by_raw_priority(matches: Vec<Match>) -> Vec<Match> {
+    let mut by_raw: HashMap<String, Match> = HashMap::new();
+    for m in matches {
+        let key = m.raw.clone();
+        match by_raw.entry(key) {
+            Entry::Vacant(e) => {
+                e.insert(m);
+            }
+            Entry::Occupied(mut e) => {
+                let incumbent = e.get();
+                let new_prio = type_priority_index(m.ty);
+                let cur_prio = type_priority_index(incumbent.ty);
+                let replace = if new_prio < cur_prio {
+                    true
+                } else if new_prio == cur_prio {
+                    // Same priority — recency wins (latest span.0).
+                    m.span.0 > incumbent.span.0
+                } else {
+                    false
+                };
+                if replace {
+                    e.insert(m);
+                }
+            }
+        }
+    }
+    let mut out: Vec<Match> = by_raw.into_values().collect();
+    out.sort_by_key(|m| std::cmp::Reverse(m.span.0));
     out
 }
 
@@ -189,6 +276,31 @@ mod tests {
         let m = extract(text);
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].context, "last https://a.example.com/x");
+    }
+
+    #[test]
+    fn cross_type_dedup_keeps_higher_priority() {
+        // `src/main.rs:42:8` matches BOTH file and diagnostic. With
+        // diagnostic ranked above file in TYPE_PRIORITY, the diag wins.
+        let text = "error at src/main.rs:42:8";
+        let m = extract(text);
+        let same_raw: Vec<_> = m.iter().filter(|x| x.raw == "src/main.rs:42:8").collect();
+        assert_eq!(same_raw.len(), 1, "got: {same_raw:?}");
+        assert_eq!(same_raw[0].ty, MatchType::Diagnostic);
+    }
+
+    #[test]
+    fn priority_bonus_order_matches_list() {
+        // First in TYPE_PRIORITY gets the highest bonus; last gets the
+        // lowest. Round-trip the list and assert bonuses are
+        // monotonically decreasing.
+        let bonuses: Vec<i32> = TYPE_PRIORITY
+            .iter()
+            .map(|&t| type_priority_bonus(t))
+            .collect();
+        for w in bonuses.windows(2) {
+            assert!(w[0] > w[1], "expected strict decrease, got {bonuses:?}");
+        }
     }
 
     #[test]
