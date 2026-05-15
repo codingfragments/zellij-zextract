@@ -21,3 +21,4 @@ ratatui = { version = "0.29", default-features = false }
 # spec'd out), or true Unicode-aware classes (none in our pattern set).
 regex-lite = "0.1"
 unicode-width = "0.2"
+nucleo-matcher = "0.3.1"
