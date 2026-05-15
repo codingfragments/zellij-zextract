@@ -203,11 +203,16 @@ copy one to clipboard, close.
     with continuation splicing + prefix stripping per Q12-Q13),
     `secret` (curated formats: JWT, AWS, GitHub, GitLab, Stripe, OpenAI,
     Anthropic, Slack, Bearer + entropy fallback per Q14-Q15).
-- Cross-pattern overlap resolution (Q25): emit all cross-type matches,
-  dedupe same-type-same-raw keeping latest occurrence, leftmost-longest
-  within a single pattern.
+- Cross-pattern overlap resolution (Q25 + Phase 4 update): two-pass
+  dedup. **Pass 1** collapses same `(type, raw)` keeping the latest
+  occurrence. **Pass 2** collapses same `raw` across types, keeping
+  the one whose type ranks earliest in a single ordered priority list
+  (`extract::TYPE_PRIORITY`); ties resolved by recency. This same list
+  drives the picker-rank score bonus (front of list = positive bonus).
+  Phase 7 KDL config exposes the order as user-tweakable.
+  Default order (highest first):
+    url, diagnostic, file, uuid, sha, ipv4, ipv6, command, secret, quoted-string.
 - Type tag colors per the palette (hardcoded for now).
-- Type-priority scoring bonuses applied to nucleo score.
 - Per-type capture fields populated into the `Match.fields` map
   (Q20: `{url}`/`{scheme}`/`{host}` via `url` crate, `{file}`/`{line}`/
   `{col}`/`{dir}`/`{basename}`/`{ext}` via `std::path::Path`, etc.).
@@ -366,12 +371,20 @@ via `~/.config/zellij/zextract.kdl`.
 - Path resolution: hardcoded default `~/.config/zellij/zextract.kdl`,
   overridable via `config_path "..."` directive in the zellij plugin block.
 - Config schema covers (matching the spec section "Configuration"):
-  - `ui { width height position preview mask_secrets grab recent_lines theme {...} }`
+  - `ui { width height position preview preview_open_width preview_closed_width
+     mask_secrets grab recent_lines theme {...} }`
+    - `preview` — default open/closed state: `off` / `auto` / `always` (Phase 4 hardcoded to `off`)
+    - `preview_open_width` — width % when preview pane is open (Phase 4 hardcoded `"90%"`)
+    - `preview_closed_width` — width % when preview pane is closed (Phase 4 hardcoded `"70%"`)
+    - The Phase 4 pane-grow-on-preview behavior (auto-resize via
+      `change_floating_panes_coordinates`) becomes config-driven here:
+      both widths and the open/closed default state user-tweakable.
   - `patterns { url {...} file {...} ... secret { formats {...} entropy_fallback {...} } command { prompts triggers continuation_strip } }`
   - `types { url { actions [...] default ... } ... }`
   - `actions { url { open command "..." } file { edit command "..." reveal command "..." } ... }`
   - `limits { copy insert open command json }`
   - `log_level "info"`
+  - `editor_command_prefix "nvim"` (Phase 4 hardcoded fallback when `$EDITOR` is unset)
 - User-extensible patterns: any `patterns.<name>` block with `regex`,
   `type`, and optional `template "..."` becomes a new pattern.
 - Custom action verbs only via `command "..."` template.
@@ -470,6 +483,65 @@ via `~/.config/zellij/zextract.kdl`.
 - Cold launch < 100 ms; first-launch (lazy) < 250 ms.
 - WASM binary ≤ 1.5 MB.
 
+## Phase 9 — CI + release automation
+
+**Goal:** turn the repo into a redistributable plugin — CI runs tests on
+every PR, tagged commits produce versioned releases with downloadable
+`.wasm` artifacts and install instructions. After this phase the project
+is ready for external users.
+
+**In scope:**
+
+- **`.github/workflows/ci.yml`** — runs on every push and PR:
+  - matrix: `cargo check`, `cargo test`, `cargo clippy -- -D warnings`,
+    `cargo fmt -- --check`
+  - Rust toolchain pinned via `rust-toolchain.toml` (already in repo)
+  - Add `wasm32-wasip1` target via `rustup target add`
+  - Verify the wasm builds successfully (`cargo build --release --target wasm32-wasip1`)
+  - Optional: binary-size check — fail if `.wasm` exceeds the budget (1.5 MB)
+  - Cache `~/.cargo` and `target/` per [actions-rs cache] pattern
+- **`.github/workflows/release.yml`** — runs on `v*.*.*` tag push:
+  - Build the release `.wasm`
+  - Strip + LTO already configured in `Cargo.toml` release profile
+  - Compute SHA-256 of the artifact
+  - Use `softprops/action-gh-release` (or equivalent) to create a GitHub
+    release with the `.wasm` and a generated checksums file attached
+  - Auto-generate release notes from commits since the previous tag
+    (use `cliff` / `git-cliff` or GitHub's auto-notes)
+- **`CHANGELOG.md`** — Keep a Changelog format, updated per release.
+- **README badges** — CI status, latest release version, license.
+- **README install section** — three install paths documented:
+  1. Download `.wasm` from the latest GitHub release, drop into
+     `~/.config/zellij/plugins/`, reference in keybind.
+  2. Build from source: `git clone && just install`.
+  3. URL load via Zellij's plugin-by-URL feature (if/when available).
+- **Reproducible builds** — pin all dep versions in `Cargo.lock` (done),
+  ensure `cargo build --locked` succeeds in CI.
+- **Versioning** — semantic versioning, starting at v0.1.0 for the first
+  Phase 8 cut. Breaking changes (config schema, action verb names, etc.)
+  bump minor in pre-1.0.
+
+**Out of scope:**
+
+- Publishing to crates.io — the plugin is a binary artifact, not a
+  reusable library, so a crates.io publish doesn't fit. Source distribution
+  via the repo + .wasm via releases covers the practical need.
+- A plugin marketplace / Zellij plugin registry — not yet a thing for
+  Zellij. Watch upstream; if/when it lands we add a publish step here.
+- Cross-platform notes — `.wasm` is platform-independent so the artifact
+  itself is one file regardless of OS. Install instructions cover
+  macOS/Linux paths.
+- Code-signing / notarization — not applicable to wasm.
+
+**Acceptance:**
+- Push to a feature branch triggers CI; PR shows green checks.
+- Pushing a `v0.1.0` tag produces a GitHub release with:
+  - `zextract.wasm` and `zextract.wasm.sha256` attached
+  - Auto-generated release notes referencing merged PRs since last tag
+- Fresh checkout of the tag + `just install` matches the released binary
+  byte-for-byte (`cargo build --locked`).
+- README install instructions verified by a non-author follower at least once.
+
 ## Appendix A — Default `zextract.kdl` (bootstrap-written)
 
 Generated as a string constant in the binary; written verbatim by `Ctrl-W`.
@@ -481,13 +553,16 @@ Fully commented so users have a starting point.
 // Reload with: zellij action reload-plugin zextract
 
 ui {
-    width "70%"
+    width "70%"                  // legacy alias — same as preview_closed_width
     height "60%"
-    position "center"      // center | top | bottom
-    preview "off"          // off | auto | always
-    mask_secrets false     // show secret values in the picker (false = visible)
-    grab "recent"          // recent | viewport | full ; Ctrl-g in the picker cycles
-    recent_lines 150       // when grab="recent", scan only the last N lines of scrollback
+    position "center"            // center | top | bottom
+    preview "off"                // off | auto | always
+    preview_closed_width "70%"   // floating pane width when preview is closed
+    preview_open_width "90%"     // floating pane width when preview is open (recentered)
+    mask_secrets false           // show secret values in the picker (false = visible)
+    grab "recent"                // recent | viewport | full ; Ctrl-g in the picker cycles
+    recent_lines 150             // when grab="recent", scan only the last N lines of scrollback
+    editor_command_prefix "nvim" // fallback when $EDITOR is unset
     // theme block omitted — uses built-in palette
 }
 

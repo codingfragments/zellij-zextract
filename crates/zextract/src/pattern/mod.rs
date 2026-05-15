@@ -25,3 +25,10 @@ pub fn trim_trailing_punct(s: &str) -> &str {
         )
     })
 }
+
+// File-existence check was attempted in Phase 4 (gate Open/Edit/Reveal
+// on whether the captured path actually exists on disk) but reverted:
+// the WASI sandbox doesn't preopen arbitrary host paths even with
+// FullHdAccess granted, so `Path::exists` returned false for files
+// that clearly exist. Revisit when Zellij exposes a plugin-side
+// host-stat API or when WASI sandboxing here gets more permissive.
