@@ -95,15 +95,45 @@ OpenAI, Anthropic, Slack, Bearer) + entropy fallback (length 20-200,
   cover boundary cases.
 - **Synthetic secrets only** in test fixtures — never check in real tokens.
 
+## Build gotchas (Zellij plugin specifics)
+
+Four WASI-plugin gotchas discovered during Phase 0 — see
+`spike-report.md` for the full write-up; the short form here so future
+phases don't re-discover them.
+
+1. **Plugins are `[[bin]]`, not `cdylib`.** Only binary crates emit
+   `_start` and `__main_void` (the WASI reactor exports the Zellij
+   plugin host requires). `register_plugin!` provides `main()`, so
+   don't add your own. Symptom of getting this wrong:
+   "could not find exported function" at plugin instantiation.
+2. **`zellij-tile` minor must match the running Zellij minor.** Plugin
+   ABI is not stable across minor versions. If `zellij --version` says
+   0.44.2, pin `zellij-tile = "0.44.x"`. Symptom of mismatch: same
+   "could not find exported function" error.
+3. **Zellij caches compiled wasm by *load path*, not content hash.**
+   Rebuilding does not invalidate. After any ABI-affecting change
+   (zellij-tile bump, crate-type change), run `just clear-cache` to
+   nuke the on-disk wasmtime artifact cache under
+   `~/Library/Caches/org.Zellij-Contributors.Zellij/`.
+4. **`ratatui` works in WASI only with `default-features = false`.**
+   The default `crossterm` backend's `sys` module is `cfg(unix)` /
+   `cfg(windows)` only — no `wasm32-wasip1` path. Pattern: ratatui
+   widgets render into a `Buffer`, then a custom ANSI emitter
+   walks the Buffer and writes to stdout (see
+   `crates/spike-b-ratatui/src/main.rs` for the reference
+   implementation; ~100 lines for `flush_buffer_to_stdout` +
+   `emit_style` + `emit_color`).
+
 ## Build / install / dev
 
 (Once Phase 1 is in place.)
 
 ```
-just build      # cargo build --release --target wasm32-wasip1
-just install    # symlink target/.../zextract.wasm into ~/.config/zellij/plugins/
-just dev        # build + zellij action reload-plugin zextract
-just test       # cargo test
+just build         # cargo build --release --target wasm32-wasip1
+just install       # copy target/.../zextract.wasm into ~/.config/zellij/plugins/
+just dev           # build + zellij action reload-plugin zextract
+just test          # cargo test
+just clear-cache   # rm ABI-stale wasmtime artifacts for this project (see gotcha #3)
 just clean
 ```
 

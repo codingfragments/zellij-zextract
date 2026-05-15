@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/zextract",
     "crates/spike-a-write-chars",
     "crates/spike-b-ratatui",
 ]

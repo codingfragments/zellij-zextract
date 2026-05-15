@@ -1,0 +1,23 @@
+[package]
+name = "zextract"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Zellij plugin: typed scrollback extraction with floating fuzzy picker"
+
+[[bin]]
+name = "zextract"
+path = "src/main.rs"
+
+[dependencies]
+zellij-tile.workspace = true
+ratatui = { version = "0.29", default-features = false }
+# regex-lite is a small (~50 KB) regex implementation by the regex crate
+# author, designed for binary-size-conscious targets like WASM plugins.
+# Supports the regex subset we need (\b, character classes, alternation,
+# case-insensitive flag, non-capturing groups). Drop-in `Regex` API.
+# Switch back to full `regex` if/when we need: lookaround (we won't,
+# spec'd out), or true Unicode-aware classes (none in our pattern set).
+regex-lite = "0.1"
+unicode-width = "0.2"

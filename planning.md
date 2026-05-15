@@ -31,7 +31,9 @@ the decisions made during design.
 | Regex engine | `regex` crate (no lookaround) |
 | Scan strategy | Per-pattern scan, extract-once, fuzzy-filter on keystroke |
 | Fuzzy library | `nucleo-matcher` (just the scoring crate, not the engine) |
-| TUI framework | `ratatui` (uncharted in Zellij plugins — spike required) |
+| TUI framework | `ratatui` — widgets + `Buffer`, **no Backend**, custom ANSI emitter (crossterm does not compile for `wasm32-wasip1`; verified by Phase 0 Spike B) |
+| Crate type | **`[[bin]]`**, not `cdylib` — only binary crates emit the `_start`/`__main_void` WASI reactor exports Zellij's plugin host requires (verified by Phase 0 scaffolding) |
+| Toolchain pin | `zellij-tile` minor version must match the running Zellij minor version — plugin ABI is not stable across minors |
 | Config format | KDL, separate file at `~/.config/zellij/zextract.kdl` |
 | UX model | Modal: Input ↔ List, Tab switches; Esc always closes |
 | Type filter | Inline `#type` syntax in query; `Ctrl-f` cycle removed |
@@ -48,6 +50,12 @@ the decisions made during design.
 | Logging | `eprintln!` to stderr, no external crate |
 
 ## Phase 0 — Tier-0 spikes (GATING)
+
+**Status:** merged (PR #1). Spike B PASSED, Spike A loads cleanly with
+API surface confirmed; the behavioral matrix (multi-line safety, SSH
+round-trip, special-char preservation) is still an operator
+walk-through and feeds Phase 4's insert-action scope.
+See `spike-report.md` for the findings and the five scaffolding lessons.
 
 Two questions must be answered with working code before locking the spec
 further. Both can fail. If either fails, this plan changes substantially.
