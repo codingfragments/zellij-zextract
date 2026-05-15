@@ -1,0 +1,19 @@
+❯ git log --oneline -n 20
+❯ cargo test --release
+$ kubectl get pods -n production --watch
+$ docker compose up -d zellij
+% sudo apt install zellij
+> wget https://example.com/file.tar.gz
+# Note: this comment looks like a root prompt but is just a comment
+
+Run sudo apt-get update && sudo apt-get install -y zellij from the docs.
+You can also use: brew install zellij or pacman -S zellij on Arch.
+
+$ curl -fsSL https://example.com/install.sh \
+    | sudo bash
+
+❯ rg "TODO" src/ \
+    --type rust \
+    --hidden
+
+The README says: pip install zextract-cli followed by zextract --help.

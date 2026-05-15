@@ -1,0 +1,31 @@
+$ git status
+On branch phase-3/full-pattern-set
+Your branch is up to date with 'origin/phase-3/full-pattern-set'.
+
+Changes not staged for commit:
+  modified:   crates/zextract/src/main.rs
+  modified:   crates/zextract/src/extract.rs
+
+$ cargo build --release --target wasm32-wasip1
+   Compiling zextract v0.1.0
+error[E0382]: borrow of moved value: `items`
+  --> crates/zextract/src/main.rs:142:8
+
+$ git log --oneline -3
+0b0ae16 Phase 2: live fuzzy filter
+2b5d891 Phase 1 fix: dark fg
+c75a360 Phase 1: end-to-end loop
+
+$ kubectl get pods -n production
+NAME                READY   STATUS    IP             AGE
+api-7f8d9c4-xyz12   1/1     Running   10.0.0.5       2d
+api-7f8d9c4-abc34   1/1     Running   10.0.0.6:8080  2d
+
+$ curl -fsSL https://example.com/install.sh | sudo bash
+Downloading from https://example.com/install.sh...
+
+Trace ID: 550e8400-e29b-41d4-a716-446655440000
+
+WARN: leaked token? sk_test_aBcDeFgHiJkLmNoPqRsTuVwX
+
+See README at https://github.com/codingfragments/zellij-zextract for setup.

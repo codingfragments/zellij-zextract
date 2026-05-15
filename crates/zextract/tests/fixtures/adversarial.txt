@@ -1,0 +1,20 @@
+Random near-misses that look like patterns but should be filtered out.
+
+The version 2.5.1 should not show up as a file.
+The number 12345678 is not a SHA (no letters).
+The IP 999.1.1.1 is invalid (octet out of range).
+The port 99999 on 10.0.0.1:99999 is also invalid.
+The fragment /example.com/foo inside https://example.com/foo should NOT be a separate file match.
+Embedded in word: runfile/etc/passwd should not match as file (no word-start).
+Quoted empty string "" should not match.
+Short string 'a' should not match.
+
+The text "subject:cn=foo" has a colon but isn't a file:line:col.
+
+Token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa should NOT entropy-match (low entropy).
+Token ABC12 should NOT entropy-match (too short).
+
+Partial UUID 550e8400-e29b-41d4-a716 is missing the last group.
+Random hex 0xABCDEF should not become a SHA (too short).
+
+URL with weird trailing: "Read https://example.com." should trim the period.

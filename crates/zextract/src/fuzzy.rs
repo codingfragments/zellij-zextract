@@ -15,8 +15,9 @@ pub struct FuzzyEngine {
 pub struct ScoredMatch {
     /// Index into the input `items` slice.
     pub index: usize,
-    /// Fuzzy score (higher = better). 0 for empty-query passthrough.
-    pub score: u16,
+    /// Fuzzy score (higher = better) plus any per-item bonus. 0 for
+    /// empty-query passthrough. i32 so bonuses can be negative.
+    pub score: i32,
     /// Character positions in the item that matched. Empty when query is empty.
     pub indices: Vec<u32>,
 }
@@ -34,7 +35,20 @@ impl FuzzyEngine {
         }
     }
 
+    #[allow(dead_code)] // bonus-less convenience for tests; prod path is filter_with_bonus
     pub fn filter(&mut self, query: &str, items: &[&str]) -> Vec<ScoredMatch> {
+        self.filter_with_bonus(query, items, |_| 0)
+    }
+
+    /// Variant of `filter` that adds a per-item bonus to the nucleo score.
+    /// Used by zextract to bias type-priority (diagnostic ranks higher
+    /// than sha when fuzzy scores are close).
+    pub fn filter_with_bonus<F: Fn(usize) -> i32>(
+        &mut self,
+        query: &str,
+        items: &[&str],
+        bonus_fn: F,
+    ) -> Vec<ScoredMatch> {
         if query.is_empty() {
             return (0..items.len())
                 .map(|i| ScoredMatch {
@@ -75,14 +89,12 @@ impl FuzzyEngine {
             if let Some(score) = self.matcher.fuzzy_indices(haystack, needle, &mut indices) {
                 results.push(ScoredMatch {
                     index: i,
-                    score,
+                    score: score as i32 + bonus_fn(i),
                     indices: indices.clone(),
                 });
             }
         }
 
-        // Stable sort would preserve input order for equal scores; we use
-        // unstable for speed. Tie-breaking lands in Phase 3 with type bonuses.
         results.sort_unstable_by(|a, b| b.score.cmp(&a.score));
         results
     }

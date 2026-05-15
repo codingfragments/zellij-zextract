@@ -1,0 +1,28 @@
+$ cargo build
+   Compiling zextract v0.1.0
+error[E0382]: borrow of moved value: `foo`
+  --> src/extract.rs:42:8
+   |
+40 |     let foo = items;
+   |         --- move occurs because `foo` has type `Vec<String>`
+41 |     consume(foo);
+   |             --- value moved here
+42 |     use(&foo);
+   |         ^^^^ value borrowed here after move
+
+warning: unused variable: `bar`
+  --> crates/zextract/src/main.rs:142:9
+   |
+142 |     let bar = compute();
+   |         ^^^ help: consider prefixing with an underscore: `_bar`
+
+$ python3 -m unittest
+Traceback (most recent call last):
+  File "/usr/lib/python3.11/lib/test.py", line 42, in run
+    self._run_test()
+  File "/Users/stefan/code/myproj/tests/test_main.py", line 18, in test_demo
+    self.assertEqual(x, 1)
+AssertionError: 0 != 1
+
+$ npx eslint src/
+src/app.js:42:8  warning  Unused variable 'config'  no-unused-vars

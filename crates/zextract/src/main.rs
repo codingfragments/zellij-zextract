@@ -7,6 +7,7 @@
 
 mod extract;
 mod fuzzy;
+mod pattern;
 mod render;
 mod source_pane;
 
@@ -206,7 +207,13 @@ impl State {
             .and_then(|i| self.filtered.get(i))
             .map(|s| s.index);
 
-        self.filtered = self.fuzzy.filter(&self.query, &displays);
+        // Per-type score bonuses bias relative ranking when fuzzy scores
+        // are close. Numbers are small so the primary signal is the
+        // fuzzy match itself; bonuses only nudge ties.
+        let matches = &self.matches;
+        self.filtered = self.fuzzy.filter_with_bonus(&self.query, &displays, |i| {
+            matches.get(i).map(|m| type_priority_bonus(m.ty)).unwrap_or(0)
+        });
 
         let new_selection = if let Some(prev) = prev_selected_match_idx {
             self.filtered.iter().position(|s| s.index == prev).unwrap_or(0)
@@ -348,9 +355,36 @@ fn highlight_spans(display: &str, indices: &[u32]) -> Vec<Span<'static>> {
     spans
 }
 
+/// Per-type score bonus added on top of nucleo's fuzzy score. Small
+/// numbers — primary signal is the match itself; bonuses break ties.
+/// Configurable in Phase 7 via KDL.
+fn type_priority_bonus(ty: MatchType) -> i32 {
+    match ty {
+        MatchType::Url => 0,
+        MatchType::File => 0,
+        MatchType::Diagnostic => 5,    // highly actionable → editor at line
+        MatchType::Command => -2,      // often noisier (exec-anchored false-ish)
+        MatchType::Sha => -5,          // specific use; push down
+        MatchType::Secret => -3,       // caution — don't rank above the thing you wanted
+        MatchType::Uuid => -3,
+        MatchType::Ipv4 => -3,
+        MatchType::Ipv6 => -3,
+        MatchType::QuotedString => -1, // mildly noisy
+    }
+}
+
 fn type_color(ty: MatchType) -> Color {
     match ty {
         MatchType::Url => Color::Blue,
+        MatchType::File => Color::Green,
+        MatchType::Diagnostic => Color::LightRed,
+        MatchType::Sha => Color::Yellow,
+        MatchType::Ipv4 => Color::Cyan,
+        MatchType::Ipv6 => Color::Cyan,
+        MatchType::Uuid => Color::Magenta,
+        MatchType::QuotedString => Color::Gray,
+        MatchType::Command => Color::LightMagenta,
+        MatchType::Secret => Color::LightRed,
     }
 }
 
