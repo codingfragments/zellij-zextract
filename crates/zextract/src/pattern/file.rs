@@ -1,7 +1,11 @@
 //! File path pattern: absolute (`/...`), home-relative (`~/...`),
 //! explicit-relative (`./...`, `../...`), relative-with-slash
-//! (`src/main.rs`), and filenames with extensions (`Cargo.toml`).
-//! Optional `:line[:col]` suffix.
+//! (`src/main.rs`). Optional `:line[:col]` suffix.
+//!
+//! Requires at least one path separator — bare filenames without a
+//! slash (`Cargo.toml`, `stefan.marx`, `call.json`) are intentionally
+//! NOT matched to avoid false positives. Add a `./` prefix to match
+//! a bare filename explicitly.
 //!
 //! Captures `{file}` (path sans line/col), `{line}`, `{col}`,
 //! `{dir}` (parent), `{basename}`, `{ext}`.
@@ -18,17 +22,18 @@ use crate::pattern::trim_trailing_punct;
 fn file_regex() -> &'static Regex {
     static FILE_RE: OnceLock<Regex> = OnceLock::new();
     FILE_RE.get_or_init(|| {
-        // Branches:
-        //   ~?/...               absolute or home-relative ("/etc/passwd", "~/cfg")
+        // All three branches require at least one `/` — bare filenames
+        // like `Cargo.toml` or `stefan.marx` do NOT match. Add `./`
+        // prefix in the scrollback to force a match.
+        //
+        //   ~?/...               absolute or home-relative ("/tmp", "~/cfg")
         //   \.\.?/...            explicit-relative ("./bin", "../foo")
         //   [\w.\-]+/[\w.\-/]+   relative with at least one slash ("src/main.rs")
-        //   [\w.\-]+\.[A-Za-z]\w{0,9}  bare filename with extension ("Cargo.toml")
         // Optional :line[:col] suffix.
         Regex::new(concat!(
             r"(?:~?/[\w.\-/]+",
             r"|\.\.?/[\w.\-/]+",
-            r"|[\w.\-]+/[\w.\-/]+",
-            r"|[\w.\-]+\.[A-Za-z]\w{0,9})",
+            r"|[\w.\-]+/[\w.\-/]+)",
             r"(?::\d+(?::\d+)?)?",
         ))
         .expect("file regex compiles")
@@ -209,10 +214,18 @@ mod tests {
     }
 
     #[test]
-    fn bare_filename_with_extension() {
-        let m = extract("update Cargo.toml then run cargo build");
-        let raws: Vec<_> = m.iter().map(|x| x.raw.as_str()).collect();
-        assert!(raws.contains(&"Cargo.toml"));
+    fn bare_filename_no_longer_matches() {
+        // No slash → no match. Add ./ prefix to force a match.
+        assert!(extract("update Cargo.toml then run cargo build").is_empty());
+        assert!(extract("call.json() returned null").is_empty());
+        assert!(extract("hello stefan.marx how are you").is_empty());
+    }
+
+    #[test]
+    fn slash_prefix_still_matches() {
+        // Adding any path separator makes it a valid file match.
+        let m = extract("see ./Cargo.toml for deps");
+        assert_eq!(m[0].raw, "./Cargo.toml");
     }
 
     #[test]
@@ -241,7 +254,7 @@ mod tests {
 
     #[test]
     fn trims_trailing_punct() {
-        let m = extract("look at Cargo.toml.");
-        assert_eq!(m[0].raw, "Cargo.toml");
+        let m = extract("look at src/Cargo.toml.");
+        assert_eq!(m[0].raw, "src/Cargo.toml");
     }
 }
