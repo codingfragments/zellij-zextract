@@ -191,17 +191,35 @@ fn extract_custom(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
                 if raw.is_empty() {
                     continue;
                 }
+                // Build fields for all capture groups: {0} = full match,
+                // {1} = group 1 (= raw), {2}, {3}, ... for further groups.
+                // {match} is an alias for {1} (or {0} when no groups).
+                let mut fields = HashMap::new();
+                let full_str = full.as_str();
+                fields.insert("0".to_string(), full_str.to_string());
+                for i in 1..caps.len() {
+                    if let Some(g) = caps.get(i) {
+                        fields.insert(i.to_string(), g.as_str().to_string());
+                    }
+                }
+                fields.insert("match".to_string(), raw.clone());
+
                 let expanded = match &cp.template {
-                    Some(tmpl) => tmpl.replace("{match}", &raw),
+                    Some(tmpl) => {
+                        let mut out = tmpl.clone();
+                        // Replace {0}, {1}, {2}, … with captured group values.
+                        for (key, val) in &fields {
+                            out = out.replace(&format!("{{{key}}}"), val);
+                        }
+                        out
+                    }
                     None => raw.clone(),
                 };
-                let mut fields = HashMap::new();
                 match ty {
                     MatchType::Url => { fields.insert("url".to_string(), expanded.clone()); }
                     MatchType::File => { fields.insert("file".to_string(), expanded.clone()); }
                     _ => {}
                 }
-                fields.insert("match".to_string(), raw.clone());
                 out.push(Match {
                     ty,
                     raw: raw.clone(),
@@ -501,6 +519,48 @@ mod tests {
         let m = matches.iter().find(|m| m.label.as_deref() == Some("jira")).unwrap();
         assert_eq!(m.raw, "ST-154R");
         assert_eq!(m.display, "https://jira.example.com/browse/ST-154R");
+    }
+
+    #[test]
+    fn custom_pattern_multi_group_template() {
+        // regex has 3 groups; template uses {1}, {2}, {3}
+        let p = patterns_with("pr",
+            r"github\.com/([^/]+)/([^/]+)/pull/([0-9]+)",
+            "url",
+            Some("https://github.com/{1}/{2}/pull/{3}"));
+        let text = "see github.com/myorg/myrepo/pull/42 for details";
+        let matches = extract(text, &p);
+        let m = matches.iter().find(|m| m.label.as_deref() == Some("pr")).unwrap();
+        assert_eq!(m.raw, "myorg"); // group 1
+        assert_eq!(m.display, "https://github.com/myorg/myrepo/pull/42");
+        assert_eq!(m.fields.get("1").unwrap(), "myorg");
+        assert_eq!(m.fields.get("2").unwrap(), "myrepo");
+        assert_eq!(m.fields.get("3").unwrap(), "42");
+        assert_eq!(m.fields.get("0").unwrap(), "github.com/myorg/myrepo/pull/42");
+    }
+
+    #[test]
+    fn custom_pattern_group0_full_match_in_template() {
+        // {0} gives the full match even when groups exist
+        let p = patterns_with("tagged",
+            r"PREFIX:([A-Z]+)",
+            "cmd",
+            Some("echo full={0} id={1}"));
+        let text = "see PREFIX:HELLO here";
+        let matches = extract(text, &p);
+        let m = matches.iter().find(|m| m.label.as_deref() == Some("tagged")).unwrap();
+        assert_eq!(m.display, "echo full=PREFIX:HELLO id=HELLO");
+    }
+
+    #[test]
+    fn custom_pattern_match_alias_for_group1() {
+        // {match} and {1} are equivalent
+        let p = patterns_with("jira", r"([A-Z]+-[0-9]+)", "url",
+            Some("{match} == {1}"));
+        let text = "fix PROJ-99";
+        let matches = extract(text, &p);
+        let m = matches.iter().find(|m| m.label.as_deref() == Some("jira")).unwrap();
+        assert_eq!(m.display, "PROJ-99 == PROJ-99");
     }
 
     #[test]
