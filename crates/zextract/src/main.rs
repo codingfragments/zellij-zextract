@@ -167,6 +167,7 @@ struct State {
     /// over both the file config and the compiled defaults.
     launch_preview: Option<bool>,
     launch_grab: Option<String>,
+    pane_title: String,
     /// Bootstrap / error banner shown in the footer area. Dismissed by
     /// Ctrl-X; parse-error banners are sticky until dismissed or fixed.
     banner: Option<BannerKind>,
@@ -206,6 +207,7 @@ impl Default for State {
             preview_open: false,
             launch_preview: None,
             launch_grab: None,
+            pane_title: "zextract".to_string(),
             banner: None,
             message: None,
             render_buffer: None,
@@ -259,6 +261,13 @@ impl ZellijPlugin for State {
         if let Some(v) = configuration.get("grab") {
             self.launch_grab = Some(v.trim().to_string());
         }
+        // `title "My Picker"` — floating pane title. Defaults to "zextract".
+        if let Some(v) = configuration.get("title") {
+            let t = v.trim().to_string();
+            if !t.is_empty() {
+                self.pane_title = t;
+            }
+        }
 
         let ids = get_plugin_ids();
         plog!(
@@ -269,6 +278,7 @@ impl ZellijPlugin for State {
             ids.initial_cwd.display().to_string(),
         );
         self.own_plugin_id = ids.plugin_id;
+        rename_plugin_pane(ids.plugin_id, &self.pane_title);
         // The probe runs from the PermissionRequestResult handler —
         // calling change_host_folder before the runtime registers the
         // grant produces "permission denied" even when the cache
