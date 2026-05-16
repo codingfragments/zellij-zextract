@@ -40,6 +40,20 @@ mkdir -p ~/.config/zellij/plugins
 cp zextract.wasm ~/.config/zellij/plugins/
 ```
 
+### Contributing / development setup
+
+After cloning, install the git pre-push hook so fmt + clippy + tests run before every push:
+
+```sh
+sh scripts/install-hooks.sh
+```
+
+Or run the checks manually at any time:
+
+```sh
+just check   # fmt, clippy, test, wasm build — mirrors CI exactly
+```
+
 ### Option 2 — Build from source
 
 Requires Rust + `wasm32-wasip1` target:
