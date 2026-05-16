@@ -649,7 +649,7 @@ impl State {
         let Some(m) = self.current_match().cloned() else {
             return false;
         };
-        self.fire_verb(action::default_verb(&m))
+        self.fire_verb(action::default_verb(&m, &self.config.types))
     }
 
     fn fire_verb(&mut self, verb: Verb) -> bool {
@@ -693,7 +693,7 @@ impl State {
             .filter(|&&i| {
                 self.matches
                     .get(i)
-                    .map(|m| action::is_verb_allowed(m, verb))
+                    .map(|m| action::is_verb_allowed(m, verb, &self.config.types))
                     .unwrap_or(false)
             })
             .copied()
@@ -774,7 +774,7 @@ impl State {
             Verb::Open | Verb::Reveal => {
                 for &i in &allowed {
                     if let Some(m) = self.matches.get(i).cloned() {
-                        action::dispatch(verb, &m, self.source_pane, &self.config.editor_command_prefix);
+                        action::dispatch(verb, &m, self.source_pane, &self.config.editor_command_prefix, &self.config.types);
                     }
                 }
                 close_self();
@@ -824,7 +824,7 @@ impl State {
             self.toggle_preview();
             return true;
         }
-        match action::dispatch(verb, m, self.source_pane, &self.config.editor_command_prefix) {
+        match action::dispatch(verb, m, self.source_pane, &self.config.editor_command_prefix, &self.config.types) {
             DispatchResult::Closed => {
                 close_self();
                 false
@@ -1237,7 +1237,7 @@ impl State {
         let mut line1: Vec<Span<'static>> = Vec::new();
 
         if let Some(m) = self.current_match() {
-            let default = action::default_verb(m);
+            let default = action::default_verb(m, &self.config.types);
             line1.push(Span::styled(
                 format!(" {}", m.ty.tag()),
                 Style::default()
@@ -1251,7 +1251,7 @@ impl State {
             // Only show action keys in List mode; in Input mode all those
             // letters go into the query, not actions.
             if matches!(self.mode, Mode::List) {
-                for verb in action::allowed_verbs(m) {
+                for verb in action::allowed_verbs(m, &self.config.types) {
                     if verb == default {
                         continue; // Already shown as Enter:label.
                     }

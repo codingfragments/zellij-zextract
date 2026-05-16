@@ -17,6 +17,8 @@
 // (limits/editor/log_level). Suppressing per-commit until they wire.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+
 use crate::config::parse::Node;
 
 /// Result of loading the user's config file, or all-defaults if no
@@ -28,11 +30,11 @@ pub struct Config {
     pub ui: UiConfig,
     pub grab: GrabConfig,
     pub limits: LimitsConfig,
+    pub types: TypesConfig,
     pub editor_command_prefix: String,
     pub log_level: LogLevel,
     // Reserved for upcoming commits:
     //   pub patterns: PatternsConfig,
-    //   pub types: TypesConfig,
     //   pub actions: ActionsConfig,
 }
 
@@ -42,6 +44,7 @@ impl Default for Config {
             ui: UiConfig::default(),
             grab: GrabConfig::default(),
             limits: LimitsConfig::default(),
+            types: TypesConfig::default(),
             editor_command_prefix: "nvim".to_string(),
             log_level: LogLevel::Info,
         }
@@ -65,6 +68,7 @@ impl Config {
                 "ui" => parse_ui_block(&node.children, &mut config.ui),
                 "grab" => parse_grab_block(&node.children, &mut config.grab),
                 "limits" => parse_limits_block(&node.children, &mut config.limits),
+                "types" => parse_types_block(&node.children, &mut config.types),
                 "editor_command_prefix" => {
                     if let Some(s) = node.args.first().and_then(|v| v.as_string()) {
                         config.editor_command_prefix = s.to_string();
@@ -83,6 +87,49 @@ impl Config {
             }
         }
         config
+    }
+}
+
+/// Parse a `types { url { actions "open" "copy" "insert"; default "open" } }`
+/// block. Each child is a per-type override keyed by the type tag
+/// (`url`, `file`, `diag`, `sha`, `ipv4`, `ipv6`, `uuid`, `quote`,
+/// `cmd`, `secret`). Unknown tags are accepted at parse time and only
+/// rejected at use time (defensive: lets users keep config across
+/// future MatchType additions).
+fn parse_types_block(nodes: &[Node], types: &mut TypesConfig) {
+    for type_node in nodes {
+        let tag = type_node.name.clone();
+        let mut over = TypeOverride::default();
+        for child in &type_node.children {
+            match child.name.as_str() {
+                "actions" => {
+                    let list: Vec<String> = child
+                        .args
+                        .iter()
+                        .filter_map(|v| v.as_string().map(|s| s.to_string()))
+                        .collect();
+                    // Explicit empty `actions` (no args) means "no
+                    // verbs allowed for this type" — honor it. Only
+                    // skip if the user gave args but they all failed
+                    // to parse as strings (defensive).
+                    if !child.args.is_empty() && list.is_empty() {
+                        continue;
+                    }
+                    over.actions = Some(list);
+                }
+                "default" => {
+                    if let Some(s) = child.args.first().and_then(|v| v.as_string()) {
+                        over.default = Some(s.to_string());
+                    }
+                }
+                _ => {} // forward-compat
+            }
+        }
+        // Only record if the user set something — empty `url { }` has
+        // no effect, preserving the static behavior.
+        if over.actions.is_some() || over.default.is_some() {
+            types.overrides.insert(tag, over);
+        }
     }
 }
 
@@ -292,6 +339,27 @@ pub struct GrabProfile {
 pub enum GrabSource {
     Scrollback,
     Viewport,
+}
+
+// ---- Types ----
+
+/// Per-type configuration: allow-list and default verb overrides. Keys
+/// are type tags (the strings returned by `MatchType::tag`). Stored as
+/// raw strings — interpretation happens in `action.rs`. Domain-free
+/// keeps the schema testable without pulling in extract/action.
+#[derive(Debug, Clone, Default)]
+pub struct TypesConfig {
+    pub overrides: HashMap<String, TypeOverride>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TypeOverride {
+    /// User-provided verb labels for this type, in display order.
+    /// `None` = no override, fall back to static allow-list.
+    /// `Some(vec![])` = explicit empty = no verbs allowed.
+    pub actions: Option<Vec<String>>,
+    /// Verb label fired by Enter. `None` = no override.
+    pub default: Option<String>,
 }
 
 // ---- Limits ----
@@ -669,6 +737,83 @@ mod tests {
         assert!(should_log(LogLevel::Error, LogLevel::Debug));
         assert!(should_log(LogLevel::Debug, LogLevel::Debug));
         assert!(!should_log(LogLevel::Off, LogLevel::Debug));
+    }
+
+    // ---- types block parsing ----
+
+    #[test]
+    fn types_default_block_omitted_has_no_overrides() {
+        let config = Config::from_ast(&[]);
+        assert!(config.types.overrides.is_empty());
+    }
+
+    #[test]
+    fn types_user_override_actions_and_default() {
+        let nodes = parse::parse(
+            r#"types {
+                url {
+                    actions "open" "copy" "insert"
+                    default "open"
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        let over = config.types.overrides.get("url").expect("url override set");
+        assert_eq!(
+            over.actions.as_deref(),
+            Some(&["open".to_string(), "copy".to_string(), "insert".to_string()][..])
+        );
+        assert_eq!(over.default.as_deref(), Some("open"));
+    }
+
+    #[test]
+    fn types_block_with_partial_overrides() {
+        // Only actions set, no default — `default` should be None.
+        let nodes = parse::parse(
+            r#"types {
+                file { actions "edit" "copy" }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        let over = config.types.overrides.get("file").unwrap();
+        assert!(over.actions.is_some());
+        assert!(over.default.is_none());
+    }
+
+    #[test]
+    fn types_block_empty_per_type_record_is_dropped() {
+        // `url { }` with no children leaves no override — equivalent to
+        // omitting it. Avoids polluting `overrides` with no-op entries.
+        let nodes = parse::parse(r#"types { url { } }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert!(config.types.overrides.is_empty());
+    }
+
+    #[test]
+    fn types_block_explicit_empty_actions_recorded() {
+        // `actions` with no args = "block all verbs for this type".
+        let nodes = parse::parse(r#"types { url { actions } }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        let over = config.types.overrides.get("url").unwrap();
+        assert_eq!(over.actions.as_deref(), Some(&[][..]));
+    }
+
+    #[test]
+    fn types_block_unknown_inner_keys_dropped() {
+        let nodes = parse::parse(
+            r#"types {
+                url {
+                    actions "open"
+                    future_setting "x"
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        let over = config.types.overrides.get("url").unwrap();
+        assert_eq!(over.actions.as_deref(), Some(&["open".to_string()][..]));
     }
 
     // ---- editor_command_prefix (top-level scalar) ----
