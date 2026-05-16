@@ -66,6 +66,14 @@ struct State {
     /// Transient status-bar message. Cleared on the next keystroke.
     /// Phase 9 will time these out; for now any keypress clears.
     message: Option<String>,
+    /// Reused ratatui Buffer for rendering. Allocating a fresh one
+    /// per frame (rows × cols × ~40 bytes/cell ≈ 500 KB at 90% × 60%)
+    /// churns the WASM allocator hard — linear memory keeps growing
+    /// until Zellij's host refuses (manifests as
+    /// "growth operation limited"). We hold one and re-use it,
+    /// resetting cells per frame and reallocating only when the
+    /// terminal size actually changes.
+    render_buffer: Option<Buffer>,
 }
 
 impl Default for State {
@@ -86,6 +94,7 @@ impl Default for State {
             mode: Mode::Input,
             preview_open: false,
             message: None,
+            render_buffer: None,
         }
     }
 }
@@ -148,7 +157,22 @@ impl ZellijPlugin for State {
             width: cols as u16,
             height: rows as u16,
         };
-        let mut buf = Buffer::empty(area);
+
+        // Reuse the buffer across renders. Reallocate only when the
+        // terminal size actually changes. `Buffer::reset` clears all
+        // cells in-place without freeing. Hits Zellij's per-plugin
+        // wasm memory cap otherwise — see the field doc on State.
+        //
+        // Split-borrow pattern: take the buffer out of self, render
+        // through it (which needs &mut self for the helpers), then
+        // put it back. mem::take leaves a None placeholder.
+        let mut local_buf = match self.render_buffer.take() {
+            Some(mut b) if b.area() == &area => {
+                b.reset();
+                b
+            }
+            _ => Buffer::empty(area),
+        };
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -159,20 +183,21 @@ impl ZellijPlugin for State {
             ])
             .split(area);
 
-        self.render_input(chunks[0], &mut buf);
+        self.render_input(chunks[0], &mut local_buf);
         if self.preview_open {
             let split = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(chunks[1]);
-            self.render_list(split[0], &mut buf);
-            self.render_preview(split[1], &mut buf);
+            self.render_list(split[0], &mut local_buf);
+            self.render_preview(split[1], &mut local_buf);
         } else {
-            self.render_list(chunks[1], &mut buf);
+            self.render_list(chunks[1], &mut local_buf);
         }
-        self.render_footer(chunks[2], &mut buf);
+        self.render_footer(chunks[2], &mut local_buf);
 
-        render::flush(&buf);
+        render::flush(&local_buf);
+        self.render_buffer = Some(local_buf);
     }
 }
 
