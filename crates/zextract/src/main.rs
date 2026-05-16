@@ -300,6 +300,7 @@ impl State {
                     text.len(),
                     nodes.len(),
                 );
+                self.apply_config_after_load();
             }
             Err(e) => {
                 eprintln!(
@@ -307,6 +308,25 @@ impl State {
                 );
             }
         }
+    }
+
+    /// Apply config-driven runtime state after a successful load.
+    /// Today: set `preview_open` per the `preview` setting (Always =>
+    /// open at launch) and trigger a pane resize so the configured
+    /// preview widths take effect immediately rather than waiting for
+    /// the next preview toggle.
+    fn apply_config_after_load(&mut self) {
+        let initial_preview_open = matches!(
+            self.config.ui.preview,
+            config::PreviewDefault::Always
+        );
+        if self.preview_open != initial_preview_open {
+            self.preview_open = initial_preview_open;
+        }
+        // Pane resize regardless of preview_open value — picks up
+        // any width changes the user set in config even when preview
+        // starts closed.
+        self.resize_for_preview();
     }
 
     fn try_extract(&mut self) {
@@ -728,22 +748,27 @@ impl State {
     }
 
     /// Ask Zellij to resize our floating pane based on whether preview
-    /// is open. Open → 90% wide, recentered to x=5%. Closed → 70%
-    /// wide, recentered to x=15%. Height unchanged (left None so
-    /// Zellij keeps whatever the keybind set).
-    ///
-    /// Phase 7 will make the open/closed widths configurable.
+    /// is open. Widths come from `config.ui.preview_open_width` and
+    /// `preview_closed_width` (defaults `"90%"` and `"70%"`). For
+    /// percent-shaped widths we recenter the x-coordinate so the pane
+    /// stays centered as it grows/shrinks; for anything else we just
+    /// pass the width through and leave x untouched.
     fn resize_for_preview(&self) {
-        let (x, w) = if self.preview_open { ("5%", "90%") } else { ("15%", "70%") };
+        let w = if self.preview_open {
+            &self.config.ui.preview_open_width
+        } else {
+            &self.config.ui.preview_closed_width
+        };
+        let x = recenter_x_for_width(w);
         let Some(coords) = FloatingPaneCoordinates::new(
-            Some(x.to_string()),
+            x.map(|s| s.to_string()),
             None,                       // keep current y
             Some(w.to_string()),
             None,                       // keep current height
             None,                       // pinned unchanged
             None,                       // borderless unchanged
         ) else {
-            eprintln!("[zextract] resize: failed to build coords");
+            eprintln!("[zextract] resize: failed to build coords for w={w:?}");
             return;
         };
         change_floating_panes_coordinates(vec![(
@@ -1204,6 +1229,32 @@ fn cap_for_verb(verb: Verb) -> usize {
     }
 }
 
+/// Compute the recentered x-coordinate for a floating pane of the
+/// given width. For percent widths `"N%"` returns `"(100-N)/2 %"`
+/// so the pane stays centered as the width grows/shrinks. For any
+/// other shape (absolute cells, malformed, etc.) returns `None`
+/// meaning "don't change x, just let Zellij keep the previous one."
+fn recenter_x_for_width(width: &str) -> Option<&'static str> {
+    let percent_str = width.strip_suffix('%')?;
+    let percent: u32 = percent_str.parse().ok()?;
+    if percent >= 100 {
+        return Some("0%");
+    }
+    // Map common percentages to static strings so we don't allocate
+    // each render. The defaults exercise just two values.
+    match (100 - percent) / 2 {
+        0 => Some("0%"),
+        5 => Some("5%"),
+        10 => Some("10%"),
+        15 => Some("15%"),
+        20 => Some("20%"),
+        25 => Some("25%"),
+        // Any unusual width gets None — Zellij keeps the previous x.
+        // Acceptable; rare in practice.
+        _ => None,
+    }
+}
+
 /// Compute the 0-based line index of a byte offset within `text`.
 /// Used by the preview pane to locate the line that contains a match.
 fn line_index_for_span(text: &str, byte_offset: usize) -> usize {
@@ -1261,5 +1312,37 @@ mod tests {
         // "abcde" with indices [1, 2, 3] → "a"+plain, "bcd"+hi, "e"+plain
         let spans = highlight_spans("abcde", &[1, 2, 3]);
         assert_eq!(spans.len(), 3);
+    }
+
+    // ---- recenter_x_for_width ----
+
+    #[test]
+    fn recenter_x_typical_widths() {
+        assert_eq!(recenter_x_for_width("90%"), Some("5%"));
+        assert_eq!(recenter_x_for_width("70%"), Some("15%"));
+        assert_eq!(recenter_x_for_width("60%"), Some("20%"));
+        assert_eq!(recenter_x_for_width("80%"), Some("10%"));
+        assert_eq!(recenter_x_for_width("50%"), Some("25%"));
+        assert_eq!(recenter_x_for_width("100%"), Some("0%"));
+    }
+
+    #[test]
+    fn recenter_x_oversize_clamps_to_zero() {
+        assert_eq!(recenter_x_for_width("150%"), Some("0%"));
+    }
+
+    #[test]
+    fn recenter_x_non_percent_returns_none() {
+        // Absolute cell widths — let Zellij keep the previous x.
+        assert_eq!(recenter_x_for_width("120"), None);
+        assert_eq!(recenter_x_for_width(""), None);
+        assert_eq!(recenter_x_for_width("nonsense"), None);
+    }
+
+    #[test]
+    fn recenter_x_uncommon_percent_returns_none() {
+        // 77% would recenter to 11.5% — not in our lookup. Fall
+        // through to None so Zellij keeps the previous x.
+        assert_eq!(recenter_x_for_width("77%"), None);
     }
 }
