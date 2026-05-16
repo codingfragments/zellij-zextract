@@ -262,7 +262,7 @@ impl ZellijPlugin for State {
             self.launch_grab = Some(v.trim().to_string());
         }
         // `title "My Picker"` — floating pane title. Defaults to "zextract".
-        if let Some(v) = configuration.get("title") {
+        if let Some(v) = configuration.get("name") {
             let t = v.trim().to_string();
             if !t.is_empty() {
                 self.pane_title = t;
