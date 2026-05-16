@@ -80,7 +80,7 @@ struct State {
     /// usually arrives before `HostFolderChanged`), so the FIRST
     /// extraction uses defaults regardless of what's in the config
     /// file. Settings that don't affect extraction (UI widths, action
-    /// templates, limits, editor_command_prefix) take effect on first
+    /// templates, limits) take effect on first
     /// render after `HostFolderChanged` — fine. Settings that DO
     /// affect extraction (`grab.recent_lines`, custom `patterns.*`
     /// blocks) need a re-extract once config lands — that wiring is
@@ -769,7 +769,7 @@ impl State {
             Verb::Open | Verb::Reveal => {
                 for &i in &allowed {
                     if let Some(m) = self.matches.get(i).cloned() {
-                        action::dispatch(verb, &m, self.source_pane, &self.config.editor_command_prefix, &self.config.types, &self.config.actions);
+                        action::dispatch(verb, &m, self.source_pane, &self.config.types, &self.config.actions);
                     }
                 }
                 close_self();
@@ -780,21 +780,26 @@ impl State {
                     self.message = Some("edit: no source pane".into());
                     return true;
                 };
-                let editor = action::resolve_editor(&self.config.editor_command_prefix);
-                let files: Vec<String> = allowed
+                // Multi-target: fire single-target dispatch per match.
+                // Each match gets its own template (type-specific or default)
+                // with correct {line} handling. Commands join with " && "
+                // so the user can review the whole chain before hitting Enter.
+                let cmds: Vec<String> = allowed
                     .iter()
                     .filter_map(|&i| self.matches.get(i))
-                    .map(|m| {
-                        let f = m
-                            .fields
-                            .get("file")
-                            .map(|s| s.as_str())
-                            .unwrap_or(&m.raw);
-                        action::shell_quote(f)
+                    .filter_map(|m| {
+                        let tag = m.ty.tag();
+                        let tmpl = self.config.actions.overrides.get(tag)
+                            .or_else(|| self.config.actions.overrides.get("default"))
+                            .and_then(|t| t.edit.as_deref())
+                            .unwrap_or(action::DEFAULT_EDIT_TEMPLATE);
+                        let cmd = action::substitute_opt(tmpl, m);
+                        if cmd.is_empty() { None } else { Some(cmd) }
                     })
                     .collect();
-                let cmd = format!("{} {}", editor, files.join(" "));
-                write_chars_to_pane_id(&cmd, PaneId::Terminal(pane_id));
+                if !cmds.is_empty() {
+                    write_chars_to_pane_id(&cmds.join(" && "), PaneId::Terminal(pane_id));
+                }
                 close_self();
                 false
             }
@@ -819,7 +824,7 @@ impl State {
             self.toggle_preview();
             return true;
         }
-        match action::dispatch(verb, m, self.source_pane, &self.config.editor_command_prefix, &self.config.types, &self.config.actions) {
+        match action::dispatch(verb, m, self.source_pane, &self.config.types, &self.config.actions) {
             DispatchResult::Closed => {
                 close_self();
                 false

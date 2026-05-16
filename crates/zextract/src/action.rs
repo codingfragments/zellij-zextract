@@ -12,6 +12,11 @@ use zellij_tile::prelude::*;
 use crate::config::{ActionsConfig, TypesConfig};
 use crate::extract::{Match, MatchType};
 
+/// The built-in fallback edit template when no `actions` override is
+/// configured. Uses `{editor}` (resolves to `$EDITOR || "nvim"`) and
+/// `{line}` optional stripping via `substitute_opt`.
+pub const DEFAULT_EDIT_TEMPLATE: &str = "{editor} +{line} {file}";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
     CopyRaw,
@@ -207,15 +212,16 @@ pub fn dispatch(
     verb: Verb,
     m: &Match,
     source_pane: Option<u32>,
-    editor_cmd: &str,
     types: &TypesConfig,
     actions: &ActionsConfig,
 ) -> DispatchResult {
     if !is_verb_allowed(m, verb, types) {
         return DispatchResult::Rejected;
     }
+    // Look up per-type override first, then fall back to "default".
     let tag = m.ty.tag();
-    let verb_templates = actions.overrides.get(tag);
+    let verb_templates = actions.overrides.get(tag)
+        .or_else(|| actions.overrides.get("default"));
     match verb {
         Verb::CopyRaw => {
             copy_to_clipboard(&m.raw);
@@ -233,7 +239,7 @@ pub fn dispatch(
         }
         Verb::Edit => {
             let tmpl = verb_templates.and_then(|t| t.edit.as_deref());
-            run_edit(m, source_pane, editor_cmd, tmpl)
+            run_edit(m, source_pane, tmpl)
         }
         Verb::Reveal => {
             let tmpl = verb_templates.and_then(|t| t.reveal.as_deref());
@@ -248,28 +254,6 @@ pub fn dispatch(
     }
 }
 
-/// Resolve the editor command. The config value (`editor_command_prefix`)
-/// is authoritative — explicit user config beats an ambient env var.
-/// Falls back to `$EDITOR` only when config is at its default (`nvim`),
-/// i.e. the user hasn't touched `editor_command_prefix` at all.
-/// If neither is set, returns `"nvim"`.
-///
-/// Rationale for config-wins: this is a GUI-adjacent picker plugin, not
-/// a CLI tool launched from the shell. `$EDITOR` in the Zellij WASI
-/// sandbox may not even match the user's shell `$EDITOR`. An explicit
-/// `editor_command_prefix "hx"` in the config file is unambiguous intent
-/// and should not be silently overridden by a shell env var.
-pub fn resolve_editor(configured: &str) -> String {
-    const DEFAULT: &str = "nvim";
-    if configured != DEFAULT {
-        // User has explicitly set a non-default value — honour it.
-        return configured.to_string();
-    }
-    // Config is at default — maybe the user hasn't configured yet.
-    // Check $EDITOR so zextract works out-of-the-box for people whose
-    // EDITOR is set to something other than nvim.
-    std::env::var("EDITOR").unwrap_or_else(|_| DEFAULT.to_string())
-}
 
 /// Serialize a slice of Match references to a compact, single-line
 /// JSON array. Always returns an array (even for one element) per
@@ -383,42 +367,23 @@ fn run_open(m: &Match, template: Option<&str>) -> DispatchResult {
 ///   - Without line: `<editor> <quoted-path>`
 ///
 /// The `+<line>` form is what nvim / vim / less / many editors accept.
-/// VSCode-style users override `editor_command_prefix` to something
-/// like `code -g`, then handle `+<line>` themselves on their wrapper
-/// (`actions { url { edit command "code -g {file}:{line}" } }` once
-/// per-type templates land).
+/// VSCode users: `actions { file { edit command "code -g {file}:{line}" } }`.
 ///
-/// Editor resolution: `resolve_editor` — config wins when explicitly set;
-/// falls back to `$EDITOR` only when config is still at its default.
+/// Editor resolution: `{editor}` in the template expands to `$EDITOR`
+/// or `"nvim"` if unset. The default template is `DEFAULT_EDIT_TEMPLATE`.
 ///
 /// Path quoting: applied only when the path contains characters that
 /// would be re-interpreted by the shell (spaces, `$`, backticks, etc.).
 /// Single-quoted with embedded `'` escaped as `'\''` — standard POSIX.
-fn run_edit(
-    m: &Match,
-    source_pane: Option<u32>,
-    editor_cmd: &str,
-    template: Option<&str>,
-) -> DispatchResult {
+fn run_edit(m: &Match, source_pane: Option<u32>, template: Option<&str>) -> DispatchResult {
     let Some(pane_id) = source_pane else {
         return DispatchResult::Rejected;
     };
-    let cmd = if let Some(tmpl) = template {
-        // User template — substitute_opt strips separator chars (`:`, `+`,
-        // space) before any field that resolves to empty, so
-        // `"hx {file}:{line}"` → `"hx src/main.rs"` when line is absent.
-        substitute_opt(tmpl, m)
-    } else {
-        // Built-in: editor-prefix + `+{line}` nvim/vim/hx form.
-        let file = m.fields.get("file").map(|s| s.as_str()).unwrap_or(&m.raw);
-        let line = m.fields.get("line").map(|s| s.as_str()).unwrap_or("");
-        let editor = resolve_editor(editor_cmd);
-        if line.is_empty() {
-            format!("{} {}", editor, shell_quote(file))
-        } else {
-            format!("{} +{} {}", editor, line, shell_quote(file))
-        }
-    };
+    // Use user template if set, otherwise fall back to the built-in
+    // default. Both paths go through substitute_opt so {line} stripping
+    // and {editor} resolution work identically.
+    let tmpl = template.unwrap_or(DEFAULT_EDIT_TEMPLATE);
+    let cmd = substitute_opt(tmpl, m);
     write_chars_to_pane_id(&cmd, PaneId::Terminal(pane_id));
     DispatchResult::Closed
 }
@@ -426,6 +391,7 @@ fn run_edit(
 /// POSIX-safe shell quoting. If `s` contains only chars that the shell
 /// won't reinterpret, returns it as-is; otherwise wraps it in single
 /// quotes (with embedded `'` escaped as `'\''`).
+#[allow(dead_code)] // used in multi-target edit and tests
 pub(crate) fn shell_quote(s: &str) -> String {
     let is_safe = !s.is_empty()
         && s.chars().all(|c| {
@@ -548,6 +514,10 @@ pub fn substitute_opt(template: &str, m: &Match) -> String {
             "display" => m.display.clone(),
             "type" => m.ty.tag().to_string(),
             "context" => m.context.clone(),
+            // {editor} resolves to $EDITOR env var, falling back to "nvim".
+            // Lets the default template work out-of-the-box without any
+            // config and respects the user's shell editor setting.
+            "editor" => std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string()),
             _ => m.fields.get(&name).cloned().unwrap_or_default(),
         };
         if value.is_empty() {

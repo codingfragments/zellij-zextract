@@ -32,7 +32,6 @@ pub struct Config {
     pub limits: LimitsConfig,
     pub types: TypesConfig,
     pub actions: ActionsConfig,
-    pub editor_command_prefix: String,
     pub log_level: LogLevel,
     // Reserved for upcoming commits:
     //   pub patterns: PatternsConfig,
@@ -46,7 +45,6 @@ impl Default for Config {
             limits: LimitsConfig::default(),
             types: TypesConfig::default(),
             actions: ActionsConfig::default(),
-            editor_command_prefix: "nvim".to_string(),
             log_level: LogLevel::Info,
         }
     }
@@ -71,11 +69,6 @@ impl Config {
                 "limits" => parse_limits_block(&node.children, &mut config.limits),
                 "types" => parse_types_block(&node.children, &mut config.types),
                 "actions" => parse_actions_block(&node.children, &mut config.actions),
-                "editor_command_prefix" => {
-                    if let Some(s) = node.args.first().and_then(|v| v.as_string()) {
-                        config.editor_command_prefix = s.to_string();
-                    }
-                }
                 "log_level" => {
                     if let Some(s) = node.args.first().and_then(|v| v.as_string()) {
                         if let Some(lvl) = LogLevel::parse(s) {
@@ -510,7 +503,6 @@ mod tests {
         assert_eq!(c.ui.preview_open_width, "90%");
         assert_eq!(c.ui.preview_closed_width, "70%");
         assert!(!c.ui.mask_secrets);
-        assert_eq!(c.editor_command_prefix, "nvim");
         assert_eq!(c.log_level, LogLevel::Info);
 
         // Grab profiles: quick(150) / deep(1500) / viewport / full
@@ -533,7 +525,7 @@ mod tests {
     #[test]
     fn from_ast_empty_returns_defaults() {
         let config = Config::from_ast(&[]);
-        assert_eq!(config.editor_command_prefix, "nvim");
+        assert_eq!(config.log_level, LogLevel::Info);
     }
 
     #[test]
@@ -977,29 +969,6 @@ mod tests {
         let config = Config::from_ast(&nodes);
         let over = config.types.overrides.get("url").unwrap();
         assert_eq!(over.actions.as_deref(), Some(&["open".to_string()][..]));
-    }
-
-    // ---- editor_command_prefix (top-level scalar) ----
-
-    #[test]
-    fn editor_command_prefix_user_override() {
-        let nodes = parse::parse(r#"editor_command_prefix "code -g""#).unwrap();
-        let config = Config::from_ast(&nodes);
-        assert_eq!(config.editor_command_prefix, "code -g");
-    }
-
-    #[test]
-    fn editor_command_prefix_omitted_keeps_default() {
-        let config = Config::from_ast(&[]);
-        assert_eq!(config.editor_command_prefix, "nvim");
-    }
-
-    #[test]
-    fn editor_command_prefix_non_string_keeps_default() {
-        // `editor_command_prefix 42` — integer where string expected.
-        let nodes = parse::parse(r#"editor_command_prefix 42"#).unwrap();
-        let config = Config::from_ast(&nodes);
-        assert_eq!(config.editor_command_prefix, "nvim");
     }
 
     // ---- limits block parsing ----
