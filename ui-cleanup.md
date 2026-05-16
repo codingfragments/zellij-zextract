@@ -32,5 +32,12 @@ the commit hash that fixed it.
 ## Resolved
 
 - **(2026-05-16) Preview on/off footer indicator obsolete.** Fixed in
-  Phase 11 (this session) — footer now shows `p:preview` without the
-  redundant `-on`/`-off` suffix.
+  Phase 11 — footer shows `p:preview`; status message on toggle removed.
+
+- **(2026-05-17) Status message auto-dismiss.** Fixed in Phase 11 —
+  `set_message()` arms a 3-second `set_timeout`; `Event::Timer` clears
+  it. Keypress still clears immediately too.
+
+- **(2026-05-17) Grab label redesign.** Fixed in Phase 11 — two-line
+  label outside the input box: dim source type (`scrollback`/`viewport`)
+  on top, bold line cap (`150 ln` / `full`) below.

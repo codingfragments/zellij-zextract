@@ -290,10 +290,9 @@ impl ZellijPlugin for State {
             EventType::Key,
             EventType::PaneUpdate,
             EventType::PermissionRequestResult,
-            // Phase 7 probe: change_host_folder is async; these events
-            // signal completion / failure.
             EventType::HostFolderChanged,
             EventType::FailedToChangeHostFolder,
+            EventType::Timer,
         ]);
     }
 
@@ -360,6 +359,14 @@ impl ZellijPlugin for State {
                 changed || (was_some && new_source.is_none())
             }
             Event::Key(key) => self.handle_key(key),
+            Event::Timer(_) => {
+                if self.message.is_some() {
+                    self.message = None;
+                    true
+                } else {
+                    false
+                }
+            }
             _ => false,
         }
     }
@@ -505,14 +512,13 @@ impl State {
         // between launch and Ctrl-W) can't silently clobber their config.
         if std::path::Path::new(path).exists() {
             self.banner = None;
-            self.message = Some("Config file already exists — not overwritten".into());
+            self.set_message("Config file already exists — not overwritten");
             return;
         }
         match std::fs::write(path, DEFAULT_CONFIG) {
             Ok(()) => {
                 self.banner = None;
-                self.message =
-                    Some("Config written — edit ~/.config/zellij/zextract.kdl and reload".into());
+                self.set_message("Config written — edit ~/.config/zellij/zextract.kdl and reload");
             }
             Err(e) => {
                 self.banner = Some(BannerKind::ParseError(format!("write failed: {e}")));
@@ -745,6 +751,12 @@ impl State {
 
     /// Advance `current_grab_profile_index` to the next configured
     /// grab profile (wrapping), clear `extraction_done`, and re-run
+    /// Set a transient status message and arm a 3-second auto-dismiss timer.
+    fn set_message(&mut self, msg: impl Into<String>) {
+        self.message = Some(msg.into());
+        set_timeout(3.0);
+    }
+
     /// extraction. Status bar reports the new profile + match count
     /// delta so the user sees whether widening/narrowing helped.
     fn cycle_grab_profile(&mut self) {
@@ -883,13 +895,13 @@ impl State {
                 .and_then(|&i| self.matches.get(i))
                 .map(|m| m.effective_tag())
                 .unwrap_or("selection");
-            self.message = Some(format!("'{}' not available for [{}]", verb.label(), sample));
+            self.set_message(format!("'{}' not available for [{}]", verb.label(), sample));
             return true;
         }
 
         let cap = cap_for_verb(verb, &self.config.limits);
         if allowed.len() > cap {
-            self.message = Some(format!(
+            self.set_message(format!(
                 "Refused: {} matches exceeds cap of {} for '{}'",
                 allowed.len(),
                 cap,
@@ -927,7 +939,7 @@ impl State {
             }
             Verb::Insert | Verb::InsertDisplay => {
                 let Some(pane_id) = self.source_pane else {
-                    self.message = Some("insert: no source pane".into());
+                    self.set_message("insert: no source pane");
                     return true;
                 };
                 let pieces: Vec<String> = allowed
@@ -962,7 +974,7 @@ impl State {
             }
             Verb::Edit => {
                 let Some(pane_id) = self.source_pane else {
-                    self.message = Some("edit: no source pane".into());
+                    self.set_message("edit: no source pane");
                     return true;
                 };
                 // Multi-target: fire single-target dispatch per match.
@@ -1029,11 +1041,11 @@ impl State {
                 false
             }
             DispatchResult::StayOpen => {
-                self.message = Some(format!("{} fired (stay-open)", verb.label()));
+                self.set_message(format!("{} fired (stay-open)", verb.label()));
                 true
             }
             DispatchResult::Rejected => {
-                self.message = Some(format!(
+                self.set_message(format!(
                     "'{}' not available for [{}]",
                     verb.label(),
                     m.effective_tag()
@@ -1215,18 +1227,9 @@ impl State {
     }
 
     fn render_input(&self, area: Rect, buf: &mut Buffer) {
-        // Grab-profile label width: brackets + name + 1 space each side.
-        // Computed from the longest name in the current profile list so
-        // the box doesn't shift when cycling.
-        let max_name = self
-            .config
-            .grab
-            .profiles
-            .iter()
-            .map(|p| p.name.len())
-            .max()
-            .unwrap_or(5);
-        let grab_label_width = (max_name + 4) as u16; // [name] + 2 spaces
+        // Grab-profile label: two lines (source + cap), width from widest cap string.
+        // "scrollback" = 10, "1500 ln" = 7, "full" = 4 — widest source wins.
+        let grab_label_width: u16 = 12; // "scrollback" + 2 padding
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(1), Constraint::Length(grab_label_width)])
@@ -1310,18 +1313,32 @@ impl State {
             .block(Block::default().borders(Borders::ALL).title("zextract"))
             .render(chunks[0], buf);
 
-        // Grab-profile label: vertically centered, normal text color,
-        // bracketed. `g` in List mode cycles it.
+        // Grab-profile label: two lines bottom-aligned in the 3-row strip.
+        //   row 0 (top border level): source type — "scrollback" / "viewport"
+        //   row 1 (content level):    line cap  — "150 ln" / "1500 ln" / "full"
+        //   row 2 (bottom border level): empty
+        // `g` / Alt-g cycles profiles.
         if let Some(p) = self
             .config
             .grab
             .profiles
             .get(self.current_grab_profile_index)
         {
-            let label = format!("[{}]", p.name);
+            use crate::config::GrabSource;
+            let source_str = match p.source {
+                GrabSource::Scrollback => "scrollback",
+                GrabSource::Viewport => "viewport",
+            };
+            let cap_str = match p.lines {
+                Some(n) => format!("{n} ln"),
+                None => "full".to_string(),
+            };
+            let dim = Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM);
             Paragraph::new(vec![
-                Line::from(""),
-                Line::from(Span::styled(label, Style::default())),
+                Line::from(Span::styled(source_str, dim)),
+                Line::from(Span::styled(cap_str, Style::default())),
                 Line::from(""),
             ])
             .alignment(ratatui::layout::Alignment::Center)
