@@ -554,26 +554,14 @@ impl State {
     /// delta so the user sees whether widening/narrowing helped.
     fn cycle_grab_profile(&mut self) {
         if self.config.grab.profiles.is_empty() {
-            self.message = Some("no grab profiles configured".into());
             return;
         }
-        let prev_count = self.matches.len();
         let n = self.config.grab.profiles.len();
         self.current_grab_profile_index = (self.current_grab_profile_index + 1) % n;
-        let name = self.config.grab.profiles[self.current_grab_profile_index]
-            .name
-            .clone();
-
-        // Force re-extraction with the new profile.
         self.extraction_done = false;
         self.try_extract();
-
-        let delta = self.matches.len() as i64 - prev_count as i64;
-        let sign = if delta >= 0 { "+" } else { "" };
-        self.message = Some(format!(
-            "grab → {name} ({sign}{delta} matches, now {})",
-            self.matches.len()
-        ));
+        // The active profile name is shown permanently in the input strip
+        // (grab:<name> dim indicator), so no transient status message needed.
     }
 
     fn toggle_preview(&mut self) {
@@ -1269,8 +1257,6 @@ impl State {
                 line1.push(Span::raw(":json  "));
                 line1.push(Span::styled("Space", bold));
                 line1.push(Span::raw(":select  "));
-                line1.push(Span::styled("g", bold));
-                line1.push(Span::raw(":grab  "));
             }
         } else {
             line1.push(Span::raw(" "));
