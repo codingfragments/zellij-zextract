@@ -769,7 +769,7 @@ impl State {
             Verb::Open | Verb::Reveal => {
                 for &i in &allowed {
                     if let Some(m) = self.matches.get(i).cloned() {
-                        action::dispatch(verb, &m, self.source_pane, &self.config.editor_command_prefix, &self.config.types);
+                        action::dispatch(verb, &m, self.source_pane, &self.config.editor_command_prefix, &self.config.types, &self.config.actions);
                     }
                 }
                 close_self();
@@ -819,7 +819,7 @@ impl State {
             self.toggle_preview();
             return true;
         }
-        match action::dispatch(verb, m, self.source_pane, &self.config.editor_command_prefix, &self.config.types) {
+        match action::dispatch(verb, m, self.source_pane, &self.config.editor_command_prefix, &self.config.types, &self.config.actions) {
             DispatchResult::Closed => {
                 close_self();
                 false

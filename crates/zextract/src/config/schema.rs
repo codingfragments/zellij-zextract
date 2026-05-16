@@ -31,11 +31,11 @@ pub struct Config {
     pub grab: GrabConfig,
     pub limits: LimitsConfig,
     pub types: TypesConfig,
+    pub actions: ActionsConfig,
     pub editor_command_prefix: String,
     pub log_level: LogLevel,
     // Reserved for upcoming commits:
     //   pub patterns: PatternsConfig,
-    //   pub actions: ActionsConfig,
 }
 
 impl Default for Config {
@@ -45,6 +45,7 @@ impl Default for Config {
             grab: GrabConfig::default(),
             limits: LimitsConfig::default(),
             types: TypesConfig::default(),
+            actions: ActionsConfig::default(),
             editor_command_prefix: "nvim".to_string(),
             log_level: LogLevel::Info,
         }
@@ -69,6 +70,7 @@ impl Config {
                 "grab" => parse_grab_block(&node.children, &mut config.grab),
                 "limits" => parse_limits_block(&node.children, &mut config.limits),
                 "types" => parse_types_block(&node.children, &mut config.types),
+                "actions" => parse_actions_block(&node.children, &mut config.actions),
                 "editor_command_prefix" => {
                     if let Some(s) = node.args.first().and_then(|v| v.as_string()) {
                         config.editor_command_prefix = s.to_string();
@@ -360,6 +362,73 @@ pub struct TypeOverride {
     pub actions: Option<Vec<String>>,
     /// Verb label fired by Enter. `None` = no override.
     pub default: Option<String>,
+}
+
+// ---- Actions ----
+
+/// Per-type command-template overrides for open / edit / reveal.
+/// Keys are type tags (`"url"`, `"file"`, etc.). Unknown tags are
+/// accepted at parse time — resolved against `MatchType::tag()` at
+/// dispatch time.
+#[derive(Debug, Clone, Default)]
+pub struct ActionsConfig {
+    pub overrides: HashMap<String, VerbTemplates>,
+}
+
+/// Command templates for the three "external process" verbs on one
+/// type. `None` means fall back to the built-in implementation.
+#[derive(Debug, Clone, Default)]
+pub struct VerbTemplates {
+    /// Shell command template for `open`. Executed via `run_command`.
+    /// Example: `"firefox {url}"`, `"open {file}"`.
+    pub open: Option<String>,
+    /// Shell command template for `edit`. **Inserted into the source
+    /// pane** (not run directly) so the user can review + hit Enter.
+    /// Example: `"hx {file}:{line}"`, `"nvim +{line} {file}"`.
+    pub edit: Option<String>,
+    /// Shell command template for `reveal`. Executed via `run_command`.
+    /// Example: `"open -R {file}"`, `"nautilus {file}"`.
+    pub reveal: Option<String>,
+}
+
+/// Parse an `actions { url { open command "..." } }` block.
+///
+/// Each child is a per-type node whose name is the type tag. Inside
+/// each type node, the recognised keys are `open`, `edit`, `reveal`,
+/// each in the form `<verb> command "<template>"`. The keyword
+/// `command` is required — it reserves space for future verb forms
+/// (`command-insert`, `script`, etc.) without a breaking change.
+fn parse_actions_block(nodes: &[Node], actions: &mut ActionsConfig) {
+    for type_node in nodes {
+        let tag = type_node.name.clone();
+        let mut over = VerbTemplates::default();
+        for child in &type_node.children {
+            // Expected form: `<verb> command "<template>"`
+            // args[0] = Ident("command"), args[1] = String(template)
+            let is_command = child
+                .args
+                .first()
+                .and_then(|v| v.as_string())
+                .map(|s| s == "command")
+                .unwrap_or(false);
+            if !is_command {
+                continue;
+            }
+            let Some(template) = child.args.get(1).and_then(|v| v.as_string()) else {
+                continue;
+            };
+            let template = template.to_string();
+            match child.name.as_str() {
+                "open" => over.open = Some(template),
+                "edit" => over.edit = Some(template),
+                "reveal" => over.reveal = Some(template),
+                _ => {} // forward-compat
+            }
+        }
+        if over.open.is_some() || over.edit.is_some() || over.reveal.is_some() {
+            actions.overrides.insert(tag, over);
+        }
+    }
 }
 
 // ---- Limits ----
@@ -684,6 +753,97 @@ mod tests {
         .unwrap();
         let config = Config::from_ast(&nodes);
         assert_eq!(config.grab.profiles[0].source, GrabSource::Scrollback);
+    }
+
+    // ---- actions block parsing ----
+
+    #[test]
+    fn actions_default_block_omitted_has_no_overrides() {
+        let config = Config::from_ast(&[]);
+        assert!(config.actions.overrides.is_empty());
+    }
+
+    #[test]
+    fn actions_edit_template_for_file() {
+        let nodes = parse::parse(
+            r#"actions {
+                file {
+                    edit command "hx {file}:{line}"
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        let over = config.actions.overrides.get("file").expect("file override");
+        assert_eq!(over.edit.as_deref(), Some("hx {file}:{line}"));
+        assert!(over.open.is_none());
+        assert!(over.reveal.is_none());
+    }
+
+    #[test]
+    fn actions_open_template_for_url() {
+        let nodes = parse::parse(
+            r#"actions {
+                url {
+                    open command "firefox {url}"
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        let over = config.actions.overrides.get("url").unwrap();
+        assert_eq!(over.open.as_deref(), Some("firefox {url}"));
+    }
+
+    #[test]
+    fn actions_multiple_verbs_same_type() {
+        let nodes = parse::parse(
+            r#"actions {
+                file {
+                    edit command "hx {file}:{line}"
+                    reveal command "open -R {file}"
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        let over = config.actions.overrides.get("file").unwrap();
+        assert!(over.edit.is_some());
+        assert!(over.reveal.is_some());
+        assert!(over.open.is_none());
+    }
+
+    #[test]
+    fn actions_missing_command_keyword_ignored() {
+        // `edit "hx {file}"` without `command` keyword is ignored.
+        let nodes = parse::parse(r#"actions { file { edit "hx {file}" } }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert!(config.actions.overrides.is_empty());
+    }
+
+    #[test]
+    fn actions_unknown_verb_ignored() {
+        // `future_verb command "..."` — unknown verb, silently dropped.
+        let nodes = parse::parse(
+            r#"actions { file { future_verb command "something" } }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert!(config.actions.overrides.is_empty());
+    }
+
+    #[test]
+    fn actions_multiple_types() {
+        let nodes = parse::parse(
+            r#"actions {
+                file { edit command "hx {file}:{line}" }
+                url  { open command "firefox {url}" }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert!(config.actions.overrides.contains_key("file"));
+        assert!(config.actions.overrides.contains_key("url"));
     }
 
     // ---- log_level + should_log ----

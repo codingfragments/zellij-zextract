@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use zellij_tile::prelude::*;
 
-use crate::config::TypesConfig;
+use crate::config::{ActionsConfig, TypesConfig};
 use crate::extract::{Match, MatchType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,10 +209,13 @@ pub fn dispatch(
     source_pane: Option<u32>,
     editor_cmd: &str,
     types: &TypesConfig,
+    actions: &ActionsConfig,
 ) -> DispatchResult {
     if !is_verb_allowed(m, verb, types) {
         return DispatchResult::Rejected;
     }
+    let tag = m.ty.tag();
+    let verb_templates = actions.overrides.get(tag);
     match verb {
         Verb::CopyRaw => {
             copy_to_clipboard(&m.raw);
@@ -224,13 +227,20 @@ pub fn dispatch(
         }
         Verb::Insert => insert_text(&m.raw, source_pane),
         Verb::InsertDisplay => insert_text(&m.display, source_pane),
-        Verb::Open => run_open(m),
-        Verb::Edit => run_edit(m, source_pane, editor_cmd),
-        Verb::Reveal => run_reveal(m),
-        Verb::Preview => DispatchResult::StayOpen, // Phase 8 wires real preview
+        Verb::Open => {
+            let tmpl = verb_templates.and_then(|t| t.open.as_deref());
+            run_open(m, tmpl)
+        }
+        Verb::Edit => {
+            let tmpl = verb_templates.and_then(|t| t.edit.as_deref());
+            run_edit(m, source_pane, editor_cmd, tmpl)
+        }
+        Verb::Reveal => {
+            let tmpl = verb_templates.and_then(|t| t.reveal.as_deref());
+            run_reveal(m, tmpl)
+        }
+        Verb::Preview => DispatchResult::StayOpen,
         Verb::Json => {
-            // Single-match J → array of one. Multi-target J in main.rs
-            // calls `matches_to_json_array` directly with N elements.
             let json = matches_to_json_array(std::slice::from_ref(&m));
             copy_to_clipboard(&json);
             DispatchResult::Closed
@@ -336,9 +346,13 @@ fn insert_text(text: &str, source_pane: Option<u32>) -> DispatchResult {
     DispatchResult::Closed
 }
 
-fn run_open(m: &Match) -> DispatchResult {
-    // Phase 4 hardcodes the macOS `open` command. Phase 7 makes this
-    // configurable per-platform via KDL; defaults branch by OS.
+fn run_open(m: &Match, template: Option<&str>) -> DispatchResult {
+    if let Some(tmpl) = template {
+        let cmd = substitute_opt(tmpl, m);
+        run_command(&["sh", "-c", &cmd], BTreeMap::new());
+        return DispatchResult::Closed;
+    }
+    // Built-in: macOS `open` (or xdg-open on Linux).
     let url_target;
     let target: &str = match m.ty {
         MatchType::Url => &m.raw,
@@ -380,18 +394,30 @@ fn run_open(m: &Match) -> DispatchResult {
 /// Path quoting: applied only when the path contains characters that
 /// would be re-interpreted by the shell (spaces, `$`, backticks, etc.).
 /// Single-quoted with embedded `'` escaped as `'\''` — standard POSIX.
-fn run_edit(m: &Match, source_pane: Option<u32>, editor_cmd: &str) -> DispatchResult {
+fn run_edit(
+    m: &Match,
+    source_pane: Option<u32>,
+    editor_cmd: &str,
+    template: Option<&str>,
+) -> DispatchResult {
     let Some(pane_id) = source_pane else {
         return DispatchResult::Rejected;
     };
-    let file = m.fields.get("file").map(|s| s.as_str()).unwrap_or(&m.raw);
-    let line = m.fields.get("line").map(|s| s.as_str()).unwrap_or("");
-    let editor = resolve_editor(editor_cmd);
-    let cmd = if line.is_empty() {
-        format!("{} {}", editor, shell_quote(file))
+    let cmd = if let Some(tmpl) = template {
+        // User template — substitute_opt strips separator chars (`:`, `+`,
+        // space) before any field that resolves to empty, so
+        // `"hx {file}:{line}"` → `"hx src/main.rs"` when line is absent.
+        substitute_opt(tmpl, m)
     } else {
-        // Line is always digit-only (regex constraint) — no shell quoting needed.
-        format!("{} +{} {}", editor, line, shell_quote(file))
+        // Built-in: editor-prefix + `+{line}` nvim/vim/hx form.
+        let file = m.fields.get("file").map(|s| s.as_str()).unwrap_or(&m.raw);
+        let line = m.fields.get("line").map(|s| s.as_str()).unwrap_or("");
+        let editor = resolve_editor(editor_cmd);
+        if line.is_empty() {
+            format!("{} {}", editor, shell_quote(file))
+        } else {
+            format!("{} +{} {}", editor, line, shell_quote(file))
+        }
     };
     write_chars_to_pane_id(&cmd, PaneId::Terminal(pane_id));
     DispatchResult::Closed
@@ -422,7 +448,12 @@ pub(crate) fn shell_quote(s: &str) -> String {
     out
 }
 
-fn run_reveal(m: &Match) -> DispatchResult {
+fn run_reveal(m: &Match, template: Option<&str>) -> DispatchResult {
+    if let Some(tmpl) = template {
+        let cmd = substitute_opt(tmpl, m);
+        run_command(&["sh", "-c", &cmd], BTreeMap::new());
+        return DispatchResult::Closed;
+    }
     let file = m.fields.get("file").map(|s| s.as_str()).unwrap_or(&m.raw);
     run_command(&["open", "-R", file], BTreeMap::new());
     DispatchResult::Closed
@@ -472,6 +503,60 @@ pub fn substitute(template: &str, m: &Match) -> String {
             _ => m.fields.get(&name).cloned().unwrap_or_default(),
         };
         out.push_str(&value);
+    }
+    out
+}
+
+/// Like `substitute`, but when a `{field}` resolves to an empty string,
+/// strips any immediately preceding separator characters from the output.
+/// Separator chars: `:`, `+`, ` ` (space), `,`.
+///
+/// This handles the common "optional line number" case cleanly:
+///
+///   `"hx {file}:{line}"` + line="" → `"hx src/main.rs"` (`:` stripped)
+///   `"nvim +{line} {file}"` + line="" → `"nvim src/main.rs"` (`+` and space stripped)
+///   `"hx {file}:{line}"` + line="42" → `"hx src/main.rs:42"` (unchanged)
+///
+/// Note: stripping is retroactive on the output buffer — it does NOT look
+/// ahead. A leading `{field}` that is empty produces no stripping (there's
+/// nothing to strip before it in the output).
+pub fn substitute_opt(template: &str, m: &Match) -> String {
+    const SEP: &[char] = &[':', '+', ' ', ','];
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '{' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'{') {
+            chars.next();
+            out.push('{');
+            continue;
+        }
+        let mut name = String::new();
+        let mut closed = false;
+        for nc in chars.by_ref() {
+            if nc == '}' { closed = true; break; }
+            name.push(nc);
+        }
+        if !closed {
+            out.push('{'); out.push_str(&name); continue;
+        }
+        let value = match name.as_str() {
+            "match" | "raw" => m.raw.clone(),
+            "display" => m.display.clone(),
+            "type" => m.ty.tag().to_string(),
+            "context" => m.context.clone(),
+            _ => m.fields.get(&name).cloned().unwrap_or_default(),
+        };
+        if value.is_empty() {
+            while out.chars().last().map(|c| SEP.contains(&c)).unwrap_or(false) {
+                out.pop();
+            }
+        } else {
+            out.push_str(&value);
+        }
     }
     out
 }
@@ -773,6 +858,49 @@ mod tests {
         assert_eq!(verb_from_label("preview"), Some(Verb::Preview));
         assert_eq!(verb_from_label("json"), Some(Verb::Json));
         assert_eq!(verb_from_label("nope"), None);
+    }
+
+    // ---- substitute_opt ----
+
+    #[test]
+    fn substitute_opt_colon_line_stripped_when_empty() {
+        let mut m = empty_match(MatchType::File);
+        m.fields.insert("file".to_string(), "src/main.rs".to_string());
+        // line absent → strip the `:` before {line}
+        assert_eq!(substitute_opt("hx {file}:{line}", &m), "hx src/main.rs");
+    }
+
+    #[test]
+    fn substitute_opt_plus_line_stripped_when_empty() {
+        let mut m = empty_match(MatchType::File);
+        m.fields.insert("file".to_string(), "src/main.rs".to_string());
+        // `+` and preceding space both stripped
+        assert_eq!(substitute_opt("nvim +{line} {file}", &m), "nvim src/main.rs");
+    }
+
+    #[test]
+    fn substitute_opt_line_present_no_stripping() {
+        let mut m = empty_match(MatchType::File);
+        m.fields.insert("file".to_string(), "src/main.rs".to_string());
+        m.fields.insert("line".to_string(), "42".to_string());
+        assert_eq!(substitute_opt("hx {file}:{line}", &m), "hx src/main.rs:42");
+        assert_eq!(substitute_opt("nvim +{line} {file}", &m), "nvim +42 src/main.rs");
+    }
+
+    #[test]
+    fn substitute_opt_no_empty_fields_unchanged() {
+        let m = url_match();
+        assert_eq!(
+            substitute_opt("firefox {url}", &m),
+            "firefox https://example.com"
+        );
+    }
+
+    #[test]
+    fn substitute_opt_leading_empty_field_no_crash() {
+        // Nothing to strip before the first field — just drops the value.
+        let m = empty_match(MatchType::File);
+        assert_eq!(substitute_opt("{line} rest", &m), " rest");
     }
 
     #[test]
