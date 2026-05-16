@@ -119,6 +119,11 @@ struct State {
     extraction_done: bool,
     mode: Mode,
     preview_open: bool,
+    /// Per-launch overrides from the keybind `configuration` map.
+    /// Applied at the END of `apply_config_after_load` so they win
+    /// over both the file config and the compiled defaults.
+    launch_preview: Option<bool>,
+    launch_grab: Option<String>,
     /// Transient status-bar message. Cleared on the next keystroke.
     /// Phase 9 will time these out; for now any keypress clears.
     message: Option<String>,
@@ -153,6 +158,8 @@ impl Default for State {
             extraction_done: false,
             mode: Mode::Input,
             preview_open: false,
+            launch_preview: None,
+            launch_grab: None,
             message: None,
             render_buffer: None,
         }
@@ -180,6 +187,7 @@ impl ZellijPlugin for State {
         //
         // The picker opens with the filter already active, same as if the
         // user had typed `#url`. Backspaceable like any other query text.
+        // `type "url"` / `type "url jira"` — pre-fill query with #tokens.
         if let Some(type_val) = configuration.get("type") {
             let prefilled: String = type_val
                 .split_whitespace()
@@ -188,9 +196,21 @@ impl ZellijPlugin for State {
                 .join(" ");
             if !prefilled.is_empty() {
                 self.query = prefilled;
-                // parsed_query will be resolved in refilter() once
-                // the known-tag set is available after extraction.
             }
+        }
+        // `preview "on"|"off"` — force preview open/closed at launch,
+        // overriding the `ui.preview` setting from the config file.
+        if let Some(v) = configuration.get("preview") {
+            self.launch_preview = match v.trim() {
+                "on" | "always" | "true" => Some(true),
+                "off" | "never" | "false" => Some(false),
+                _ => None,
+            };
+        }
+        // `grab "deep"` — start on a specific grab profile by name,
+        // overriding the `grab.default_profile` from the config file.
+        if let Some(v) = configuration.get("grab") {
+            self.launch_grab = Some(v.trim().to_string());
         }
 
         let ids = get_plugin_ids();
@@ -412,6 +432,18 @@ impl State {
             .iter()
             .position(|p| p.name == self.config.grab.default_profile)
             .unwrap_or(0);
+
+        // Apply keybind launch overrides — these win over the file config.
+        // Set AFTER the config-driven defaults so they always take effect
+        // even if the file says something different.
+        if let Some(force_preview) = self.launch_preview {
+            self.preview_open = force_preview;
+        }
+        if let Some(ref grab_name) = self.launch_grab.clone() {
+            if let Some(idx) = self.config.grab.profiles.iter().position(|p| p.name == *grab_name) {
+                self.current_grab_profile_index = idx;
+            }
+        }
 
         // Pane resize regardless of preview_open value — picks up
         // any width changes the user set in config even when preview
