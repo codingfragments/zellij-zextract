@@ -167,7 +167,6 @@ struct State {
     /// over both the file config and the compiled defaults.
     launch_preview: Option<bool>,
     launch_grab: Option<String>,
-    pane_title: String,
     /// Bootstrap / error banner shown in the footer area. Dismissed by
     /// Ctrl-X; parse-error banners are sticky until dismissed or fixed.
     banner: Option<BannerKind>,
@@ -207,7 +206,6 @@ impl Default for State {
             preview_open: false,
             launch_preview: None,
             launch_grab: None,
-            pane_title: "zextract".to_string(),
             banner: None,
             message: None,
             render_buffer: None,
@@ -261,15 +259,6 @@ impl ZellijPlugin for State {
         if let Some(v) = configuration.get("grab") {
             self.launch_grab = Some(v.trim().to_string());
         }
-        // `pane_title "My Picker"` — floating pane title. Defaults to "zextract".
-        // Use pane_title (not "name" or "title" — Zellij consumes those
-        // itself and does not forward them to the plugin configuration map).
-        if let Some(v) = configuration.get("pane_title") {
-            let t = v.trim().to_string();
-            if !t.is_empty() {
-                self.pane_title = t;
-            }
-        }
 
         let ids = get_plugin_ids();
         plog!(
@@ -300,10 +289,7 @@ impl ZellijPlugin for State {
     fn update(&mut self, event: Event) -> bool {
         match event {
             Event::PermissionRequestResult(_) => {
-                // Permissions just landed — set pane title now that
-                // ChangeApplicationState is active.
-                rename_plugin_pane(self.own_plugin_id, &self.pane_title);
-                // Kick the async two-step config load.
+                // Permissions just landed — kick the async two-step config load.
                 if !self.request_host_change_for_config_load() {
                     self.config_loaded = true;
                 }
