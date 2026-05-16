@@ -590,6 +590,223 @@ is ready for external users.
   byte-for-byte (`cargo build --locked`).
 - README install instructions verified by a non-author follower at least once.
 
+## Phase 10 — Documentation
+
+**Goal:** user-facing reference documentation sufficient for a non-author to
+install, configure, and extend zextract without reading source code.
+
+**In scope:**
+
+- **Installation guide** — three paths:
+  1. Download `.wasm` from the latest GitHub release + verify SHA-256
+  2. Build from source: `git clone && just install`
+  3. Zellij URL-load if/when the plugin registry lands upstream
+  Covers macOS and Linux paths. Keybind setup in `config.kdl` with
+  full copy-paste examples (default picker, type-preset keybinds,
+  per-keybind overrides).
+
+- **Built-in types reference** — one section per type:
+  - Tag name (used in `#filter`, `types { }`, `actions { }`)
+  - What it matches (description + representative examples)
+  - Default verb fired by `Enter`
+  - Available verbs and which require a source pane
+  - Key capture fields (`{url}`, `{file}`, `{line}`, …)
+  - Any special matching rules (e.g. file requires at least one `/`)
+
+- **Keybind cheatsheet** — table covering Input mode, List mode,
+  universal shortcuts (`Alt-g`, `Ctrl-P`, `Ctrl-Y`, …) and multi-select.
+
+- **Configuration reference** — every `zextract.kdl` key:
+  - Section, key name, value type, default, valid range
+  - One-line description
+  - Example snippet
+
+- **Customization guide** with worked examples:
+  - `actions { }` — full template variable reference (`{editor}`,
+    `{file}`, `{line}`, `{url}`, `{match}`, `{0}`, `{1}`, `{2}`, …),
+    `{line}` separator-stripping behaviour, `default` type fallback
+  - `types { }` — overriding verb allow-lists and default verb per type
+  - `patterns { }` — custom regex patterns step by step: no groups,
+    single group (context prefix), multi-group decomposition; full
+    worked examples for JIRA tickets, GitHub PRs, port numbers, git
+    branch refs
+  - Per-keybind overrides (`type`, `preview`, `grab` in Zellij config)
+
+- **Use cases** — narrative walkthroughs:
+  - Open URLs from build output
+  - Jump to a diagnostic in the editor
+  - Insert a command back to the prompt for review
+  - Export a selection of file paths as JSON for scripting
+  - Wire a dedicated `Alt-j` keybind for JIRA tickets with a custom
+    pattern that expands to the full Jira URL
+
+- **Troubleshooting** — common failure modes with diagnosis steps:
+  - "could not find exported function" (ABI mismatch + `just clear-cache`)
+  - Config changes not taking effect (async load, reload picker)
+  - Too many file matches (slash requirement)
+  - `Ctrl-W` does nothing (banner not showing / file already exists)
+  - Debug output setup (`log_level "debug"` + log tail command)
+
+- **Limitations** — honest list of what v1 cannot do and why:
+  - No mouse events (Zellij API gap)
+  - No hint mode (requires Zellij core overlay support)
+  - macOS `open` hardcoded for reveal/open (Linux: `xdg-open`)
+  - No file-content preview (scrollback context only)
+  - No multi-pane grab
+
+**Out of scope:**
+- In-code API docs (rustdoc) — the plugin is not a library.
+- Video walkthroughs / GIFs — nice to have, not blocking.
+
+**Acceptance:**
+- A developer unfamiliar with the codebase can install, configure a
+  custom JIRA pattern, and wire a type-preset keybind using only the
+  documentation (no source reading required).
+- Every config key in `zextract.kdl` has a corresponding entry in the
+  reference with a correct default and example.
+
+---
+
+## Phase 11 — v1 cleanup + v2 planning
+
+**Goal:** close out v1 cleanly and produce a written design brief for v2
+so the next major cycle starts from agreement, not from scratch.
+
+**In scope:**
+
+### UI cleanup backlog
+
+Work through `ui-cleanup.md` and any items accumulated during Phases 8–10:
+
+- **Grab label redesign** — replace the single-line `[quick]` label with
+  a two-line display: line 1 = source type (`scrollback` / `viewport`),
+  line 2 = line cap (`150 ln` / `1500 ln` / `full`). Both lines
+  horizontally centered in the column; the pair bottom-aligned in the
+  3-row input strip. Width computed from the widest cap string.
+
+- **Preview: highlight matched span** — use `m.span` byte offsets to
+  bold + underline the matched text within the context lines in the
+  preview pane. Already partially implemented; needs wiring for the
+  exact intra-line byte range. Works for built-ins; custom patterns
+  highlight the regex match position (not the expanded template text).
+
+- **Footer verb hints: cap-exceeded coloring** — when a verb's
+  multi-target cap would be exceeded by the current selection count,
+  render that verb's key hint in a muted/red style rather than bold,
+  signalling to the user that pressing it will be refused.
+
+- **Drop preview on/off suffix** — footer shows `p:preview-on` /
+  `p:preview-off`; the `-on`/`-off` is redundant now that preview
+  state is visually obvious. Show just `p:preview`.
+  File: `main.rs::render_footer`.
+
+- **Pane title override** — use `rename_plugin_pane(id, name)` to set
+  the floating pane title to `zextract` (or `zextract — #url` when a
+  type filter is active). Check exact function name in zellij-tile 0.44.x.
+
+- **Mouse click on grab label** — blocked on Zellij exposing
+  `EventType::Mouse` to plugins. Wire `cycle_grab_profile()` on a
+  left-click in the grab-label column when the API becomes available.
+
+- **Status message auto-dismiss** — currently any keypress clears
+  transient messages; spec says 3-second auto-dismiss. Wire a
+  timestamp on `State.message` and clear in `render()` when elapsed.
+
+- **Secret masking** — `ui { mask_secrets true }` is parsed but not
+  wired. Replace secret `display` values with `••••••` in the list
+  and preview when enabled.
+
+- **Action failure feedback** — `open` / `edit` dispatch currently
+  silently succeeds or fails. Surface `run_command` exit codes as a
+  transient banner when non-zero.
+
+### Code cleanup
+
+- Remove remaining `#[allow(dead_code)]` and `#![allow(dead_code)]`
+  annotations — each should either be deleted or promoted to a real
+  public API with a doc comment.
+- Audit and resolve all `// Phase N` TODO comments — mark done or
+  file as a v2 issue.
+- Tighten the `config::schema` re-export list in `mod.rs`; remove
+  `#[allow(unused_imports)]` by actually using or removing each export.
+- Add `cargo-llvm-cov` to `justfile` (`just coverage`) and wire an
+  optional coverage step in CI. Set a baseline once the insta snapshot
+  tests (Phase 3 deliverable) are wired.
+
+### v2 design brief
+
+The following topics need a written design decision before v2 work
+starts. Record decisions in `planning.md` under a new "v2 Design
+Decisions" section.
+
+**Custom pattern priority and hierarchy**
+
+When built-in and user-defined patterns both match the same raw text,
+which wins? The current dedup uses `TYPE_PRIORITY` (a static ordered
+list) but custom patterns sit outside it. Four candidate models:
+
+1. **Custom-always-wins** — any user pattern that matches a span beats
+   any built-in for that span. Simple to reason about; may suppress
+   wanted built-in matches.
+2. **Append-at-tail** — custom patterns are appended after all built-ins
+   in `TYPE_PRIORITY` order, so built-ins win on overlap. Safe default;
+   custom patterns only fire when nothing built-in matched.
+3. **User-controlled ordering** — a top-level `priority [url file jira
+   diag …]` list in `zextract.kdl` that the user populates explicitly,
+   including their custom pattern names. Maximum control; more config
+   surface.
+4. **First-defined-wins** — patterns are evaluated in KDL declaration
+   order; first match for a given span wins. Intuitive for per-file
+   configs; fragile across config merges.
+
+Decision needed: pick one model (or a hybrid) and document the
+reasoning before implementing v2 custom-pattern dedup.
+
+**Other v2 topics to scope:**
+
+- **Hint mode** — in-place labels next to matches in the source pane.
+  Requires Zellij core changes for true overlays (shadow pane or
+  decoration API). Watch upstream; design the UX spec now so it's
+  ready when the API lands.
+- **File-content preview** — open the actual file with `std::fs::read`,
+  apply syntax highlighting (via `syntect` or a lightweight ANSI
+  highlighter), render in the preview pane. Phase 7's `FullHdAccess`
+  permission already granted; need to design the "file not found"
+  fallback gracefully.
+- **Tab-completion of `#type` tokens** — completing `#ur` → `#url`
+  inline in Input mode. Requires a small UI state machine separate
+  from the current query string; design carefully to avoid breaking
+  the backspace / cursor behaviour.
+- **Multi-pane scrollback grab** — scrape all panes in the current
+  window, merge and deduplicate. Needs a UI affordance to show which
+  pane a match came from (e.g. a `{pane}` field in the match record
+  and a dim pane-name prefix in the list row).
+- **`{name?}` optional template substitution** — strip surrounding
+  separator chars only when explicitly opted in (`{line?}` vs `{line}`).
+  Currently handled by the `substitute_opt` separator-stripping
+  heuristic; make it opt-in to avoid surprising stripping.
+- **Configurable keymap** — expose a `keybinds { }` block in KDL
+  that remaps List-mode single-letter verbs. Design: only remap
+  user-facing verbs (y/i/o/e/r/p/J/g); never allow remapping Esc
+  or Tab (would break mode model).
+- **Plugin-provided pane title** — already technically possible with
+  `rename_plugin_pane`; promote from UI-cleanup to a v2 first-class
+  feature if the title should reflect active filters dynamically
+  (e.g. `zextract — 18 urls`).
+- **Test coverage reporting** — integrate `cargo-llvm-cov`; report
+  per-module line coverage in CI as an informational annotation on PRs.
+  Set a minimum threshold once snapshot tests are wired.
+
+**Acceptance:**
+- `ui-cleanup.md` has no open items.
+- All `// Phase N` comments resolved.
+- v2 design brief written and reviewed; each topic has a "decision" or
+  "deferred with reason" entry.
+- `CHANGELOG.md` updated for any patch releases between v0.1.0 and
+  the v2 branch cut.
+
+---
+
 ## Appendix A — Default `zextract.kdl` (bootstrap-written)
 
 Generated as a string constant in the binary; written verbatim by `Ctrl-W`.
