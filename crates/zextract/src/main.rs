@@ -26,7 +26,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Sta
 use zellij_tile::prelude::*;
 
 use crate::action::{DispatchResult, Verb};
-use crate::config::Config;
+use crate::config::{Config, LimitsConfig};
 use crate::extract::{Match, MatchType};
 use crate::fuzzy::{FuzzyEngine, ScoredMatch};
 use crate::query::ParsedQuery;
@@ -682,7 +682,7 @@ impl State {
             return true;
         }
 
-        let cap = cap_for_verb(verb);
+        let cap = cap_for_verb(verb, &self.config.limits);
         if allowed.len() > cap {
             self.message = Some(format!(
                 "Refused: {} matches exceeds cap of {} for '{}'",
@@ -1350,20 +1350,18 @@ fn request_host_change_for_config_load() -> bool {
     true
 }
 
-/// Per-verb cap on multi-target dispatch. Conservative defaults — the
-/// idea is to avoid foot-guns (opening 200 browser tabs by accident,
-/// pasting a 50-row wall of text into the prompt).
-///
-/// Phase 7 KDL config will expose these as `limits { copy insert open
-/// command json }`. Numbers come from planning.md Q24.
-fn cap_for_verb(verb: Verb) -> usize {
+/// Per-verb cap on multi-target dispatch. User-configurable via the
+/// `limits { ... }` KDL block; defaults come from planning.md Q24
+/// (mirrored in `LimitsConfig::default()`). Preview has no cap — it
+/// affects only the selection cursor, not external side effects.
+fn cap_for_verb(verb: Verb, limits: &LimitsConfig) -> usize {
     match verb {
-        Verb::CopyRaw | Verb::CopyDisplay => 100,
-        Verb::Insert | Verb::InsertDisplay => 5,
-        Verb::Open => 10,
-        Verb::Edit => 5,
-        Verb::Reveal => 10,
-        Verb::Json => 100,
+        Verb::CopyRaw | Verb::CopyDisplay => limits.copy as usize,
+        Verb::Insert | Verb::InsertDisplay => limits.insert as usize,
+        Verb::Open => limits.open as usize,
+        Verb::Edit => limits.edit as usize,
+        Verb::Reveal => limits.reveal as usize,
+        Verb::Json => limits.json as usize,
         Verb::Preview => usize::MAX,
     }
 }

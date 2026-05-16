@@ -64,12 +64,39 @@ impl Config {
             match node.name.as_str() {
                 "ui" => parse_ui_block(&node.children, &mut config.ui),
                 "grab" => parse_grab_block(&node.children, &mut config.grab),
+                "limits" => parse_limits_block(&node.children, &mut config.limits),
                 // Other sections wired in upcoming commits. Unknown
                 // names ignored for forward-compat.
                 _ => {}
             }
         }
         config
+    }
+}
+
+/// Parse a `limits { copy 100; insert 5; open 10; ... }` block.
+/// Each key maps directly to a `LimitsConfig` field. Negative or
+/// non-integer values are silently dropped (default preserved) so a
+/// typo can't lock the user out of a verb — the planning-mandated cap
+/// stays in place.
+fn parse_limits_block(nodes: &[Node], limits: &mut LimitsConfig) {
+    for node in nodes {
+        let Some(n) = node.args.first().and_then(|v| v.as_int()) else {
+            continue;
+        };
+        if n < 0 {
+            continue;
+        }
+        let n = n as u32;
+        match node.name.as_str() {
+            "copy" => limits.copy = n,
+            "insert" => limits.insert = n,
+            "open" => limits.open = n,
+            "edit" => limits.edit = n,
+            "reveal" => limits.reveal = n,
+            "json" => limits.json = n,
+            _ => {} // forward-compat
+        }
     }
 }
 
@@ -555,6 +582,86 @@ mod tests {
         .unwrap();
         let config = Config::from_ast(&nodes);
         assert_eq!(config.grab.profiles[0].source, GrabSource::Scrollback);
+    }
+
+    // ---- limits block parsing ----
+
+    #[test]
+    fn limits_default_block_omitted_keeps_defaults() {
+        let config = Config::from_ast(&[]);
+        assert_eq!(config.limits.copy, 100);
+        assert_eq!(config.limits.insert, 5);
+        assert_eq!(config.limits.open, 10);
+        assert_eq!(config.limits.edit, 5);
+        assert_eq!(config.limits.reveal, 10);
+        assert_eq!(config.limits.json, 100);
+    }
+
+    #[test]
+    fn limits_user_values_override_defaults() {
+        let nodes = parse::parse(
+            r#"limits {
+                copy 200
+                insert 10
+                open 25
+                edit 8
+                reveal 50
+                json 500
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.limits.copy, 200);
+        assert_eq!(config.limits.insert, 10);
+        assert_eq!(config.limits.open, 25);
+        assert_eq!(config.limits.edit, 8);
+        assert_eq!(config.limits.reveal, 50);
+        assert_eq!(config.limits.json, 500);
+    }
+
+    #[test]
+    fn limits_partial_block_keeps_other_defaults() {
+        let nodes = parse::parse(r#"limits { open 25 }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.limits.open, 25); // overridden
+        assert_eq!(config.limits.copy, 100); // default
+        assert_eq!(config.limits.insert, 5); // default
+    }
+
+    #[test]
+    fn limits_zero_means_no_dispatch() {
+        // 0 is a legal value: blocks the verb entirely. Useful for
+        // sandboxing (e.g., `insert 0` to fully disable insert).
+        let nodes = parse::parse(r#"limits { insert 0 }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.limits.insert, 0);
+    }
+
+    #[test]
+    fn limits_negative_value_keeps_default() {
+        let nodes = parse::parse(r#"limits { copy -5 }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.limits.copy, 100); // default
+    }
+
+    #[test]
+    fn limits_unknown_keys_ignored() {
+        let nodes = parse::parse(
+            r#"limits {
+                copy 50
+                future_verb 99
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.limits.copy, 50);
+    }
+
+    #[test]
+    fn limits_string_value_keeps_default() {
+        let nodes = parse::parse(r#"limits { copy "many" }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.limits.copy, 100); // default
     }
 
     #[test]
