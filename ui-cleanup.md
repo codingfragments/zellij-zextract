@@ -38,6 +38,3 @@ the commit hash that fixed it.
   `set_message()` arms a 3-second `set_timeout`; `Event::Timer` clears
   it. Keypress still clears immediately too.
 
-- **(2026-05-17) Grab label redesign.** Fixed in Phase 11 — two-line
-  label outside the input box: dim source type (`scrollback`/`viewport`)
-  on top, bold line cap (`150 ln` / `full`) below.

@@ -1227,9 +1227,18 @@ impl State {
     }
 
     fn render_input(&self, area: Rect, buf: &mut Buffer) {
-        // Grab-profile label: two lines (source + cap), width from widest cap string.
-        // "scrollback" = 10, "1500 ln" = 7, "full" = 4 — widest source wins.
-        let grab_label_width: u16 = 12; // "scrollback" + 2 padding
+        // Grab-profile label width: brackets + name + 1 space each side.
+        // Computed from the longest name in the current profile list so
+        // the box doesn't shift when cycling.
+        let max_name = self
+            .config
+            .grab
+            .profiles
+            .iter()
+            .map(|p| p.name.len())
+            .max()
+            .unwrap_or(5);
+        let grab_label_width = (max_name + 4) as u16; // [name] + 2 spaces
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(1), Constraint::Length(grab_label_width)])
@@ -1313,32 +1322,18 @@ impl State {
             .block(Block::default().borders(Borders::ALL).title("zextract"))
             .render(chunks[0], buf);
 
-        // Grab-profile label: two lines bottom-aligned in the 3-row strip.
-        //   row 0 (top border level): source type — "scrollback" / "viewport"
-        //   row 1 (content level):    line cap  — "150 ln" / "1500 ln" / "full"
-        //   row 2 (bottom border level): empty
-        // `g` / Alt-g cycles profiles.
+        // Grab-profile label: vertically centered, normal text color,
+        // bracketed. `g` in List mode / Alt-g cycles it.
         if let Some(p) = self
             .config
             .grab
             .profiles
             .get(self.current_grab_profile_index)
         {
-            use crate::config::GrabSource;
-            let source_str = match p.source {
-                GrabSource::Scrollback => "scrollback",
-                GrabSource::Viewport => "viewport",
-            };
-            let cap_str = match p.lines {
-                Some(n) => format!("{n} ln"),
-                None => "full".to_string(),
-            };
-            let dim = Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM);
+            let label = format!("[{}]", p.name);
             Paragraph::new(vec![
-                Line::from(Span::styled(source_str, dim)),
-                Line::from(Span::styled(cap_str, Style::default())),
+                Line::from(""),
+                Line::from(Span::styled(label, Style::default())),
                 Line::from(""),
             ])
             .alignment(ratatui::layout::Alignment::Center)
