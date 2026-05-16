@@ -1361,6 +1361,18 @@ impl State {
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD);
 
+        // Byte offset of the start of each line — used to compute where
+        // m.span lands within a specific line for highlight rendering.
+        let match_line_byte_start = line_byte_start(&self.captured_text, match_line);
+        let match_start_in_line = m.span.0.saturating_sub(match_line_byte_start);
+        let match_line_end_byte_start = line_byte_start(&self.captured_text, match_line_end);
+        let match_end_in_line = m.span.1.saturating_sub(match_line_end_byte_start);
+
+        let highlight_style = Style::default()
+            .fg(type_color(m.ty))
+            .add_modifier(Modifier::BOLD)
+            .add_modifier(Modifier::UNDERLINED);
+
         let mut content: Vec<Line<'static>> = Vec::new();
         for i in start..=end {
             let is_match = i >= match_line && i <= match_line_end;
@@ -1369,15 +1381,42 @@ impl State {
             } else {
                 (dim, " ", gutter_style)
             };
-            content.push(Line::from(vec![
-                Span::styled(
-                    format!("{:>w$} ", i + 1, w = line_num_width),
-                    gutter_style,
-                ),
+            let line_text = lines[i].to_string();
+            let mut spans = vec![
+                Span::styled(format!("{:>w$} ", i + 1, w = line_num_width), gutter_style),
                 Span::styled(marker, marker_style),
                 Span::raw(" "),
-                Span::styled(lines[i].to_string(), line_style),
-            ]));
+            ];
+            if is_match {
+                // Compute highlight range within this specific line.
+                let (hl_start, hl_end) = if i == match_line && i == match_line_end {
+                    (match_start_in_line, match_end_in_line)
+                } else if i == match_line {
+                    (match_start_in_line, line_text.len())
+                } else if i == match_line_end {
+                    (0, match_end_in_line)
+                } else {
+                    (0, line_text.len()) // middle lines of multi-line match
+                };
+                // Clamp to valid char boundaries.
+                let hl_start = hl_start.min(line_text.len());
+                let hl_end = hl_end.min(line_text.len());
+                let (hl_start, hl_end) = char_boundary_clamp(&line_text, hl_start, hl_end);
+                if hl_start < hl_end {
+                    if hl_start > 0 {
+                        spans.push(Span::raw(line_text[..hl_start].to_string()));
+                    }
+                    spans.push(Span::styled(line_text[hl_start..hl_end].to_string(), highlight_style));
+                    if hl_end < line_text.len() {
+                        spans.push(Span::raw(line_text[hl_end..].to_string()));
+                    }
+                } else {
+                    spans.push(Span::styled(line_text, line_style));
+                }
+            } else {
+                spans.push(Span::styled(line_text, line_style));
+            }
+            content.push(Line::from(spans));
         }
         Paragraph::new(content).block(block).render(area, buf);
     }
@@ -1645,6 +1684,28 @@ fn recenter_x_for_width(width: &str) -> Option<&'static str> {
 fn line_index_for_span(text: &str, byte_offset: usize) -> usize {
     let clamped = byte_offset.min(text.len());
     text[..clamped].bytes().filter(|&b| b == b'\n').count()
+}
+
+/// Snap `start` and `end` byte offsets to valid UTF-8 char boundaries
+/// in `s`. Both are clamped to `[0, s.len()]` first, then walked
+/// forward to the next boundary. Prevents panics from mid-codepoint
+/// slices when patterns match multibyte characters.
+fn char_boundary_clamp(s: &str, start: usize, end: usize) -> (usize, usize) {
+    let start = start.min(s.len());
+    let end = end.min(s.len());
+    let start = (start..=s.len()).find(|&i| s.is_char_boundary(i)).unwrap_or(s.len());
+    let end = (end..=s.len()).find(|&i| s.is_char_boundary(i)).unwrap_or(s.len());
+    (start, end)
+}
+
+/// Byte offset of the start of line `idx` (0-based) in `text`.
+fn line_byte_start(text: &str, idx: usize) -> usize {
+    text.bytes()
+        .enumerate()
+        .filter(|&(_, b)| b == b'\n')
+        .nth(idx.saturating_sub(1))
+        .map(|(pos, _)| pos + 1)
+        .unwrap_or(0)
 }
 
 /// Resolve a tag-string back to its color. Used by pill rendering
