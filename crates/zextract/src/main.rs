@@ -508,6 +508,11 @@ impl State {
                 self.deselect_all();
                 return true;
             }
+            // Ctrl-g → cycle through grab profiles + re-extract.
+            BareKey::Char('g') if only_ctrl => {
+                self.cycle_grab_profile();
+                return true;
+            }
             _ => {}
         }
         // Mode-specific routing.
@@ -515,6 +520,34 @@ impl State {
             Mode::Input => self.handle_key_input_mode(key),
             Mode::List => self.handle_key_list_mode(key),
         }
+    }
+
+    /// Advance `current_grab_profile_index` to the next configured
+    /// grab profile (wrapping), clear `extraction_done`, and re-run
+    /// extraction. Status bar reports the new profile + match count
+    /// delta so the user sees whether widening/narrowing helped.
+    fn cycle_grab_profile(&mut self) {
+        if self.config.grab.profiles.is_empty() {
+            self.message = Some("no grab profiles configured".into());
+            return;
+        }
+        let prev_count = self.matches.len();
+        let n = self.config.grab.profiles.len();
+        self.current_grab_profile_index = (self.current_grab_profile_index + 1) % n;
+        let name = self.config.grab.profiles[self.current_grab_profile_index]
+            .name
+            .clone();
+
+        // Force re-extraction with the new profile.
+        self.extraction_done = false;
+        self.try_extract();
+
+        let delta = self.matches.len() as i64 - prev_count as i64;
+        let sign = if delta >= 0 { "+" } else { "" };
+        self.message = Some(format!(
+            "grab → {name} ({sign}{delta} matches, now {})",
+            self.matches.len()
+        ));
     }
 
     fn toggle_preview(&mut self) {
@@ -1009,6 +1042,20 @@ impl State {
         }
 
         spans.push(Span::styled(count_text, Style::default().fg(Color::DarkGray)));
+        // Active grab profile name — small dim indicator so users
+        // remember which slice of scrollback they're searching.
+        if let Some(p) = self
+            .config
+            .grab
+            .profiles
+            .get(self.current_grab_profile_index)
+        {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                format!("grab:{}", p.name),
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+            ));
+        }
         spans.push(Span::raw("   "));
         spans.push(Span::styled(
             mode_tag,
@@ -1221,6 +1268,8 @@ impl State {
                 Span::raw(":select-all  "),
                 Span::styled("^D", bold),
                 Span::raw(":clear-sel  "),
+                Span::styled("^G", bold),
+                Span::raw(":grab  "),
             ]);
         }
         line2.push(Span::styled("Esc", bold));
