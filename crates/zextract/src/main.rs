@@ -752,10 +752,6 @@ impl State {
 
     fn toggle_preview(&mut self) {
         self.preview_open = !self.preview_open;
-        self.message = Some(format!(
-            "preview {}",
-            if self.preview_open { "on" } else { "off" }
-        ));
         self.resize_for_preview();
     }
 
