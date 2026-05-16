@@ -50,6 +50,11 @@ struct State {
     fuzzy: FuzzyEngine,
     filtered: Vec<ScoredMatch>,
     list_state: ListState,
+    /// Multi-selection: indices into `self.matches` (stable across
+    /// filter changes — a row stays selected even when filtered out,
+    /// and re-appears already-selected when the filter brings it back).
+    /// Cleared on picker close.
+    selected: HashSet<usize>,
     source_pane: Option<u32>,
     /// Our own plugin's pane id, used to call
     /// `change_floating_panes_coordinates` when the preview toggles
@@ -74,6 +79,7 @@ impl Default for State {
             fuzzy: FuzzyEngine::new(),
             filtered: Vec::new(),
             list_state,
+            selected: HashSet::new(),
             source_pane: None,
             own_plugin_id: 0,
             extraction_done: false,
@@ -364,6 +370,51 @@ impl State {
         let i = self.list_state.selected()?;
         let scored = self.filtered.get(i)?;
         self.matches.get(scored.index)
+    }
+
+    /// Index into `self.matches` for the currently-highlighted row,
+    /// or None if there's no selection cursor.
+    fn current_match_index(&self) -> Option<usize> {
+        let i = self.list_state.selected()?;
+        Some(self.filtered.get(i)?.index)
+    }
+
+    /// Toggle the highlighted row's membership in the multi-selection.
+    fn toggle_select_current(&mut self) {
+        let Some(idx) = self.current_match_index() else { return };
+        if !self.selected.insert(idx) {
+            self.selected.remove(&idx);
+        }
+    }
+
+    /// Select every match currently visible in the filtered list.
+    /// Matches filtered out by the current query are untouched.
+    fn select_all_visible(&mut self) {
+        for s in &self.filtered {
+            self.selected.insert(s.index);
+        }
+    }
+
+    fn deselect_all(&mut self) {
+        self.selected.clear();
+    }
+
+    /// The Match indices to act on. If there's a non-empty selection,
+    /// use that. Otherwise fall back to the highlighted row (so single-
+    /// match flows keep working without touching Space first).
+    fn effective_targets(&self) -> Vec<usize> {
+        if !self.selected.is_empty() {
+            // Preserve the filter's recency order in the result.
+            self.filtered
+                .iter()
+                .filter(|s| self.selected.contains(&s.index))
+                .map(|s| s.index)
+                .collect()
+        } else if let Some(i) = self.current_match_index() {
+            vec![i]
+        } else {
+            Vec::new()
+        }
     }
 
     /// Ask Zellij to resize our floating pane based on whether preview
