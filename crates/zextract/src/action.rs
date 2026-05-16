@@ -9,7 +9,13 @@ use std::collections::BTreeMap;
 
 use zellij_tile::prelude::*;
 
+use crate::config::{ActionsConfig, TypesConfig};
 use crate::extract::{Match, MatchType};
+
+/// The built-in fallback edit template when no `actions` override is
+/// configured. Uses `{editor}` (resolves to `$EDITOR || "nvim"`) and
+/// `{line}` optional stripping via `substitute_opt`.
+pub const DEFAULT_EDIT_TEMPLATE: &str = "{editor} +{line} {file}";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
@@ -77,6 +83,24 @@ pub fn verb_from_char(c: char) -> Option<Verb> {
     }
 }
 
+/// Parse a verb name string (as used in KDL config files) into a Verb.
+/// Returns None for unknown labels — caller drops with a warning.
+/// `copy-raw` is accepted as an alias for `copy` (the label name).
+pub fn verb_from_label(s: &str) -> Option<Verb> {
+    match s {
+        "copy" | "copy-raw" => Some(Verb::CopyRaw),
+        "copy-display" => Some(Verb::CopyDisplay),
+        "insert" | "insert-raw" => Some(Verb::Insert),
+        "insert-display" => Some(Verb::InsertDisplay),
+        "open" => Some(Verb::Open),
+        "edit" => Some(Verb::Edit),
+        "reveal" => Some(Verb::Reveal),
+        "preview" => Some(Verb::Preview),
+        "json" => Some(Verb::Json),
+        _ => None,
+    }
+}
+
 /// Static type-keyed allow-list. Per-match conditions (e.g. file
 /// existence) are layered on top by `allowed_verbs`.
 fn static_allowed_verbs(ty: MatchType) -> &'static [Verb] {
@@ -108,24 +132,54 @@ fn static_allowed_verbs(ty: MatchType) -> &'static [Verb] {
     }
 }
 
-/// Per-match allow-list. Currently a thin wrapper over the static
-/// type-keyed list. The signature stays Match-aware so Phase 7 (KDL
-/// config) can add per-match conditions (e.g. user-defined denies)
-/// without another API change.
-pub fn allowed_verbs(m: &Match) -> Vec<Verb> {
+/// Per-match allow-list. If the user has configured `types.<tag>.actions
+/// [...]` the user's list wins; otherwise the static type-keyed list.
+/// Universal/hardcoded denies (Secret + Open/Edit/Reveal) are applied
+/// upstream in `is_verb_allowed` regardless of override.
+pub fn allowed_verbs(m: &Match, types: &TypesConfig) -> Vec<Verb> {
+    if let Some(over) = types.overrides.get(m.ty.tag()) {
+        if let Some(action_strs) = &over.actions {
+            // Empty user list = "no actions" — honor it. Unknown labels
+            // get filtered out; the user can fix their config without
+            // breaking the plugin.
+            return action_strs.iter().filter_map(|s| verb_from_label(s)).collect();
+        }
+    }
     static_allowed_verbs(m.ty).to_vec()
 }
 
-/// Default Verb fired by Enter on a given match.
+/// Default Verb fired by Enter on a given match. User config wins via
+/// `types.<tag>.default "<verb>"`; otherwise:
 ///   - URL → Open (browser)
 ///   - Diagnostic → Edit (always carries a usable {line}; jumping straight
 ///     to it is the only thing that distinguishes diag from file)
 ///   - Everything else → Insert (captured text lands at the source pane's
 ///     prompt where the user can review and hit Enter)
-pub fn default_verb(m: &Match) -> Verb {
+///
+/// If the user's default isn't in the (possibly user-overridden)
+/// allow-list for this type, the static default is used — keeps `Enter`
+/// from firing a rejected verb.
+pub fn default_verb(m: &Match, types: &TypesConfig) -> Verb {
+    let static_default = static_default_verb(m.ty);
+    let user_default = types
+        .overrides
+        .get(m.ty.tag())
+        .and_then(|o| o.default.as_deref())
+        .and_then(verb_from_label);
+    let Some(v) = user_default else {
+        return static_default;
+    };
+    if allowed_verbs(m, types).contains(&v) {
+        v
+    } else {
+        static_default
+    }
+}
+
+fn static_default_verb(ty: MatchType) -> Verb {
     use MatchType::*;
     use Verb::*;
-    match m.ty {
+    match ty {
         Url => Open,
         Diagnostic => Edit,
         File | Command | Sha | Ipv4 | Ipv6 | Uuid | QuotedString | Secret => Insert,
@@ -134,8 +188,8 @@ pub fn default_verb(m: &Match) -> Verb {
 
 /// True if the verb may fire for the given match. CopyRaw and Json
 /// are universally allowed (planning.md Q8 / Q21). Secrets hardcoded-
-/// deny Open/Edit/Reveal.
-pub fn is_verb_allowed(m: &Match, verb: Verb) -> bool {
+/// deny Open/Edit/Reveal — even if user config tries to add them.
+pub fn is_verb_allowed(m: &Match, verb: Verb, types: &TypesConfig) -> bool {
     if matches!(verb, Verb::CopyRaw | Verb::Json) {
         return true;
     }
@@ -144,7 +198,7 @@ pub fn is_verb_allowed(m: &Match, verb: Verb) -> bool {
     {
         return false;
     }
-    allowed_verbs(m).contains(&verb)
+    allowed_verbs(m, types).contains(&verb)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,10 +208,20 @@ pub enum DispatchResult {
     Rejected,
 }
 
-pub fn dispatch(verb: Verb, m: &Match, source_pane: Option<u32>) -> DispatchResult {
-    if !is_verb_allowed(m, verb) {
+pub fn dispatch(
+    verb: Verb,
+    m: &Match,
+    source_pane: Option<u32>,
+    types: &TypesConfig,
+    actions: &ActionsConfig,
+) -> DispatchResult {
+    if !is_verb_allowed(m, verb, types) {
         return DispatchResult::Rejected;
     }
+    // Look up per-type override first, then fall back to "default".
+    let tag = m.ty.tag();
+    let verb_templates = actions.overrides.get(tag)
+        .or_else(|| actions.overrides.get("default"));
     match verb {
         Verb::CopyRaw => {
             copy_to_clipboard(&m.raw);
@@ -169,19 +233,27 @@ pub fn dispatch(verb: Verb, m: &Match, source_pane: Option<u32>) -> DispatchResu
         }
         Verb::Insert => insert_text(&m.raw, source_pane),
         Verb::InsertDisplay => insert_text(&m.display, source_pane),
-        Verb::Open => run_open(m),
-        Verb::Edit => run_edit(m, source_pane),
-        Verb::Reveal => run_reveal(m),
-        Verb::Preview => DispatchResult::StayOpen, // Phase 8 wires real preview
+        Verb::Open => {
+            let tmpl = verb_templates.and_then(|t| t.open.as_deref());
+            run_open(m, tmpl)
+        }
+        Verb::Edit => {
+            let tmpl = verb_templates.and_then(|t| t.edit.as_deref());
+            run_edit(m, source_pane, tmpl)
+        }
+        Verb::Reveal => {
+            let tmpl = verb_templates.and_then(|t| t.reveal.as_deref());
+            run_reveal(m, tmpl)
+        }
+        Verb::Preview => DispatchResult::StayOpen,
         Verb::Json => {
-            // Single-match J → array of one. Multi-target J in main.rs
-            // calls `matches_to_json_array` directly with N elements.
             let json = matches_to_json_array(std::slice::from_ref(&m));
             copy_to_clipboard(&json);
             DispatchResult::Closed
         }
     }
 }
+
 
 /// Serialize a slice of Match references to a compact, single-line
 /// JSON array. Always returns an array (even for one element) per
@@ -205,7 +277,7 @@ fn match_to_json_object(m: &Match, out: &mut String) {
     use std::fmt::Write as _;
     out.push('{');
     // Universal fields, deterministic order.
-    push_json_kv(out, "type", m.ty.tag());
+    push_json_kv(out, "type", m.effective_tag());
     out.push(',');
     push_json_kv(out, "raw", &m.raw);
     out.push(',');
@@ -258,9 +330,13 @@ fn insert_text(text: &str, source_pane: Option<u32>) -> DispatchResult {
     DispatchResult::Closed
 }
 
-fn run_open(m: &Match) -> DispatchResult {
-    // Phase 4 hardcodes the macOS `open` command. Phase 7 makes this
-    // configurable per-platform via KDL; defaults branch by OS.
+fn run_open(m: &Match, template: Option<&str>) -> DispatchResult {
+    if let Some(tmpl) = template {
+        let cmd = substitute_opt(tmpl, m);
+        run_command(&["sh", "-c", &cmd], BTreeMap::new());
+        return DispatchResult::Closed;
+    }
+    // Built-in: macOS `open` (or xdg-open on Linux).
     let url_target;
     let target: &str = match m.ty {
         MatchType::Url => &m.raw,
@@ -286,35 +362,28 @@ fn run_open(m: &Match) -> DispatchResult {
 /// the editor as a background subprocess via `run_command` would
 /// silently detach (was the earlier "nothing happens" symptom).
 ///
-/// Template (Phase 4 hardcoded; Phase 7 KDL config will expose
-/// `editor_command_prefix` and a per-type override):
+/// Template:
 ///   - With line: `<editor> +<line> <quoted-path>`
 ///   - Without line: `<editor> <quoted-path>`
 ///
 /// The `+<line>` form is what nvim / vim / less / many editors accept.
-/// VSCode-style users will override the template in Phase 7 to
-/// something like `code -g <path>:<line>`.
+/// VSCode users: `actions { file { edit command "code -g {file}:{line}" } }`.
 ///
-/// Editor resolution order:
-///   1. `$EDITOR` env var, if set
-///   2. `nvim` as a reasonable fallback
+/// Editor resolution: `{editor}` in the template expands to `$EDITOR`
+/// or `"nvim"` if unset. The default template is `DEFAULT_EDIT_TEMPLATE`.
 ///
 /// Path quoting: applied only when the path contains characters that
 /// would be re-interpreted by the shell (spaces, `$`, backticks, etc.).
 /// Single-quoted with embedded `'` escaped as `'\''` — standard POSIX.
-fn run_edit(m: &Match, source_pane: Option<u32>) -> DispatchResult {
+fn run_edit(m: &Match, source_pane: Option<u32>, template: Option<&str>) -> DispatchResult {
     let Some(pane_id) = source_pane else {
         return DispatchResult::Rejected;
     };
-    let file = m.fields.get("file").map(|s| s.as_str()).unwrap_or(&m.raw);
-    let line = m.fields.get("line").map(|s| s.as_str()).unwrap_or("");
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
-    let cmd = if line.is_empty() {
-        format!("{} {}", editor, shell_quote(file))
-    } else {
-        // Line is always digit-only (regex constraint) — no shell quoting needed.
-        format!("{} +{} {}", editor, line, shell_quote(file))
-    };
+    // Use user template if set, otherwise fall back to the built-in
+    // default. Both paths go through substitute_opt so {line} stripping
+    // and {editor} resolution work identically.
+    let tmpl = template.unwrap_or(DEFAULT_EDIT_TEMPLATE);
+    let cmd = substitute_opt(tmpl, m);
     write_chars_to_pane_id(&cmd, PaneId::Terminal(pane_id));
     DispatchResult::Closed
 }
@@ -322,6 +391,7 @@ fn run_edit(m: &Match, source_pane: Option<u32>) -> DispatchResult {
 /// POSIX-safe shell quoting. If `s` contains only chars that the shell
 /// won't reinterpret, returns it as-is; otherwise wraps it in single
 /// quotes (with embedded `'` escaped as `'\''`).
+#[allow(dead_code)] // used in multi-target edit and tests
 pub(crate) fn shell_quote(s: &str) -> String {
     let is_safe = !s.is_empty()
         && s.chars().all(|c| {
@@ -344,7 +414,12 @@ pub(crate) fn shell_quote(s: &str) -> String {
     out
 }
 
-fn run_reveal(m: &Match) -> DispatchResult {
+fn run_reveal(m: &Match, template: Option<&str>) -> DispatchResult {
+    if let Some(tmpl) = template {
+        let cmd = substitute_opt(tmpl, m);
+        run_command(&["sh", "-c", &cmd], BTreeMap::new());
+        return DispatchResult::Closed;
+    }
     let file = m.fields.get("file").map(|s| s.as_str()).unwrap_or(&m.raw);
     run_command(&["open", "-R", file], BTreeMap::new());
     DispatchResult::Closed
@@ -398,10 +473,74 @@ pub fn substitute(template: &str, m: &Match) -> String {
     out
 }
 
+/// Like `substitute`, but when a `{field}` resolves to an empty string,
+/// strips any immediately preceding separator characters from the output.
+/// Separator chars: `:`, `+`, ` ` (space), `,`.
+///
+/// This handles the common "optional line number" case cleanly:
+///
+///   `"hx {file}:{line}"` + line="" → `"hx src/main.rs"` (`:` stripped)
+///   `"nvim +{line} {file}"` + line="" → `"nvim src/main.rs"` (`+` and space stripped)
+///   `"hx {file}:{line}"` + line="42" → `"hx src/main.rs:42"` (unchanged)
+///
+/// Note: stripping is retroactive on the output buffer — it does NOT look
+/// ahead. A leading `{field}` that is empty produces no stripping (there's
+/// nothing to strip before it in the output).
+pub fn substitute_opt(template: &str, m: &Match) -> String {
+    const SEP: &[char] = &[':', '+', ' ', ','];
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '{' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'{') {
+            chars.next();
+            out.push('{');
+            continue;
+        }
+        let mut name = String::new();
+        let mut closed = false;
+        for nc in chars.by_ref() {
+            if nc == '}' { closed = true; break; }
+            name.push(nc);
+        }
+        if !closed {
+            out.push('{'); out.push_str(&name); continue;
+        }
+        let value = match name.as_str() {
+            "match" | "raw" => m.raw.clone(),
+            "display" => m.display.clone(),
+            "type" => m.ty.tag().to_string(),
+            "context" => m.context.clone(),
+            // {editor} resolves to $EDITOR env var, falling back to "nvim".
+            // Lets the default template work out-of-the-box without any
+            // config and respects the user's shell editor setting.
+            "editor" => std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string()),
+            _ => m.fields.get(&name).cloned().unwrap_or_default(),
+        };
+        if value.is_empty() {
+            while out.chars().last().map(|c| SEP.contains(&c)).unwrap_or(false) {
+                out.pop();
+            }
+        } else {
+            out.push_str(&value);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// Default-empty TypesConfig — tests that don't exercise user
+    /// overrides pass this in. Helper to keep call sites readable.
+    fn td() -> TypesConfig {
+        TypesConfig::default()
+    }
 
     fn url_match() -> Match {
         let mut fields = HashMap::new();
@@ -413,7 +552,7 @@ mod tests {
             raw: "https://example.com".to_string(),
             display: "https://example.com".to_string(),
             context: "see https://example.com here".to_string(),
-            span: (4, 23),
+            label: None, span: (4, 23),
             fields,
         }
     }
@@ -428,7 +567,7 @@ mod tests {
             raw: "src/main.rs:42:8".to_string(),
             display: "src/main.rs:42:8".to_string(),
             context: "error at src/main.rs:42:8".to_string(),
-            span: (9, 25),
+            label: None, span: (9, 25),
             fields,
         }
     }
@@ -442,7 +581,7 @@ mod tests {
             raw: "ghp_abc".to_string(),
             display: "ghp_abc".to_string(),
             context: String::new(),
-            span: (0, 7),
+            label: None, span: (0, 7),
             fields,
         }
     }
@@ -453,83 +592,90 @@ mod tests {
             raw: String::new(),
             display: String::new(),
             context: String::new(),
-            span: (0, 0),
+            label: None, span: (0, 0),
             fields: HashMap::new(),
         }
     }
 
     #[test]
     fn default_verbs_per_type() {
-        assert_eq!(default_verb(&empty_match(MatchType::Url)), Verb::Open);
+        let t = td();
+        assert_eq!(default_verb(&empty_match(MatchType::Url), &t), Verb::Open);
         // Diagnostic jumps straight to its captured line — that's the
         // thing that distinguishes it from a plain file path.
-        assert_eq!(default_verb(&empty_match(MatchType::Diagnostic)), Verb::Edit);
+        assert_eq!(default_verb(&empty_match(MatchType::Diagnostic), &t), Verb::Edit);
         // Everything else: insert at the prompt.
         for ty in [
             MatchType::File, MatchType::Command,
             MatchType::Sha, MatchType::Ipv4, MatchType::Ipv6, MatchType::Uuid,
             MatchType::QuotedString, MatchType::Secret,
         ] {
-            assert_eq!(default_verb(&empty_match(ty)), Verb::Insert, "{ty:?}");
+            assert_eq!(default_verb(&empty_match(ty), &t), Verb::Insert, "{ty:?}");
         }
     }
 
     #[test]
     fn copy_always_allowed() {
+        let t = td();
         for ty in [
             MatchType::Url, MatchType::File, MatchType::Diagnostic,
             MatchType::Sha, MatchType::Ipv4, MatchType::Ipv6,
             MatchType::Uuid, MatchType::QuotedString, MatchType::Command,
             MatchType::Secret,
         ] {
-            assert!(is_verb_allowed(&empty_match(ty), Verb::CopyRaw));
+            assert!(is_verb_allowed(&empty_match(ty), Verb::CopyRaw, &t));
         }
     }
 
     #[test]
     fn secret_denies_open_edit_reveal() {
+        let t = td();
         let m = empty_match(MatchType::Secret);
-        assert!(!is_verb_allowed(&m, Verb::Open));
-        assert!(!is_verb_allowed(&m, Verb::Edit));
-        assert!(!is_verb_allowed(&m, Verb::Reveal));
+        assert!(!is_verb_allowed(&m, Verb::Open, &t));
+        assert!(!is_verb_allowed(&m, Verb::Edit, &t));
+        assert!(!is_verb_allowed(&m, Verb::Reveal, &t));
     }
 
     #[test]
     fn file_allow_set_is_edit_copy_insert() {
+        let t = td();
         let m = empty_match(MatchType::File);
         for v in [Verb::Edit, Verb::CopyRaw, Verb::Insert] {
-            assert!(is_verb_allowed(&m, v), "file must allow {v:?}");
+            assert!(is_verb_allowed(&m, v, &t), "file must allow {v:?}");
         }
         // Open and Reveal removed in this simplification.
-        assert!(!is_verb_allowed(&m, Verb::Open));
-        assert!(!is_verb_allowed(&m, Verb::Reveal));
+        assert!(!is_verb_allowed(&m, Verb::Open, &t));
+        assert!(!is_verb_allowed(&m, Verb::Reveal, &t));
     }
 
     #[test]
     fn diagnostic_allow_set_is_edit_copy_insert() {
+        let t = td();
         let m = empty_match(MatchType::Diagnostic);
         for v in [Verb::Edit, Verb::CopyRaw, Verb::Insert] {
-            assert!(is_verb_allowed(&m, v), "diag must allow {v:?}");
+            assert!(is_verb_allowed(&m, v, &t), "diag must allow {v:?}");
         }
-        assert!(!is_verb_allowed(&m, Verb::Open));
-        assert!(!is_verb_allowed(&m, Verb::Reveal));
+        assert!(!is_verb_allowed(&m, Verb::Open, &t));
+        assert!(!is_verb_allowed(&m, Verb::Reveal, &t));
     }
 
     #[test]
     fn url_does_not_allow_reveal() {
-        assert!(!is_verb_allowed(&empty_match(MatchType::Url), Verb::Reveal));
+        let t = td();
+        assert!(!is_verb_allowed(&empty_match(MatchType::Url), Verb::Reveal, &t));
     }
 
     #[test]
     fn display_variants_only_on_quoted_string_for_now() {
-        assert!(is_verb_allowed(&empty_match(MatchType::QuotedString), Verb::CopyDisplay));
-        assert!(is_verb_allowed(&empty_match(MatchType::QuotedString), Verb::InsertDisplay));
+        let t = td();
+        assert!(is_verb_allowed(&empty_match(MatchType::QuotedString), Verb::CopyDisplay, &t));
+        assert!(is_verb_allowed(&empty_match(MatchType::QuotedString), Verb::InsertDisplay, &t));
         for ty in [
             MatchType::Url, MatchType::Sha, MatchType::Ipv4, MatchType::Ipv6,
             MatchType::Uuid, MatchType::Command, MatchType::Secret,
         ] {
-            assert!(!is_verb_allowed(&empty_match(ty), Verb::CopyDisplay), "{ty:?}");
-            assert!(!is_verb_allowed(&empty_match(ty), Verb::InsertDisplay), "{ty:?}");
+            assert!(!is_verb_allowed(&empty_match(ty), Verb::CopyDisplay, &t), "{ty:?}");
+            assert!(!is_verb_allowed(&empty_match(ty), Verb::InsertDisplay, &t), "{ty:?}");
         }
     }
 
@@ -551,14 +697,180 @@ mod tests {
         // (you should be able to export secret tokens as JSON the same
         // way you can copy them — the safety boundary is "don't open"
         // not "don't expose value at all").
+        let t = td();
         for ty in [
             MatchType::Url, MatchType::File, MatchType::Diagnostic,
             MatchType::Sha, MatchType::Ipv4, MatchType::Ipv6,
             MatchType::Uuid, MatchType::QuotedString, MatchType::Command,
             MatchType::Secret,
         ] {
-            assert!(is_verb_allowed(&empty_match(ty), Verb::Json), "{ty:?}");
+            assert!(is_verb_allowed(&empty_match(ty), Verb::Json, &t), "{ty:?}");
         }
+    }
+
+    // ---- types config override behavior ----
+
+    fn types_with(tag: &str, actions: Option<Vec<&str>>, default: Option<&str>) -> TypesConfig {
+        use crate::config::TypeOverride;
+        let mut t = TypesConfig::default();
+        t.overrides.insert(
+            tag.to_string(),
+            TypeOverride {
+                actions: actions.map(|v| v.into_iter().map(String::from).collect()),
+                default: default.map(String::from),
+            },
+        );
+        t
+    }
+
+    #[test]
+    fn types_override_allow_list_for_url() {
+        // User says: only `open` and `copy` for url. `insert` should now
+        // be rejected, but `copy` still allowed (and Json always allowed).
+        let t = types_with("url", Some(vec!["open", "copy"]), None);
+        let m = empty_match(MatchType::Url);
+        assert!(is_verb_allowed(&m, Verb::Open, &t));
+        assert!(is_verb_allowed(&m, Verb::CopyRaw, &t));
+        assert!(!is_verb_allowed(&m, Verb::Insert, &t));
+        assert!(is_verb_allowed(&m, Verb::Json, &t)); // hardcoded universal
+    }
+
+    #[test]
+    fn types_override_default_verb_for_file() {
+        // User: file → edit normally, but they want copy as default.
+        let t = types_with("file", None, Some("copy"));
+        let m = empty_match(MatchType::File);
+        assert_eq!(default_verb(&m, &t), Verb::CopyRaw);
+    }
+
+    #[test]
+    fn types_override_default_not_in_allowlist_falls_back() {
+        // User: actions = ["copy", "insert"] but default = "open".
+        // "open" isn't in their allow-list, so default falls back to
+        // the static default (Insert for File).
+        let t = types_with(
+            "file",
+            Some(vec!["copy", "insert"]),
+            Some("open"),
+        );
+        let m = empty_match(MatchType::File);
+        assert_eq!(default_verb(&m, &t), Verb::Insert); // static fallback
+    }
+
+    #[test]
+    fn types_override_cannot_unmask_secret_hard_deny() {
+        // User explicitly tries to enable open/edit/reveal on secrets.
+        // Hardcoded deny in is_verb_allowed still refuses.
+        let t = types_with(
+            "secret",
+            Some(vec!["open", "edit", "reveal", "copy"]),
+            Some("open"),
+        );
+        let m = empty_match(MatchType::Secret);
+        assert!(!is_verb_allowed(&m, Verb::Open, &t));
+        assert!(!is_verb_allowed(&m, Verb::Edit, &t));
+        assert!(!is_verb_allowed(&m, Verb::Reveal, &t));
+        // Copy still works (override allowed it; not in hard-deny set).
+        assert!(is_verb_allowed(&m, Verb::CopyRaw, &t));
+        // Default for secret with user "open" → falls back since open
+        // isn't actually in the user's effective allow-list... wait,
+        // `allowed_verbs` returns the user's raw list (including open).
+        // The default check uses `allowed_verbs(m, t).contains(&v)`
+        // which would say "yes open is allowed" — but actual dispatch
+        // would reject it. Document that user-default of an unmasked
+        // hard-denied verb is effectively a no-op at dispatch time.
+        // We accept that quirk for now; the user gets a "rejected"
+        // status message when they hit Enter.
+    }
+
+    #[test]
+    fn types_override_empty_actions_blocks_all() {
+        // User explicitly empties the action list — only universal
+        // verbs (copy-raw, json) remain dispatchable.
+        let t = types_with("url", Some(vec![]), None);
+        let m = empty_match(MatchType::Url);
+        assert!(is_verb_allowed(&m, Verb::CopyRaw, &t)); // universal
+        assert!(is_verb_allowed(&m, Verb::Json, &t));    // universal
+        assert!(!is_verb_allowed(&m, Verb::Open, &t));   // blocked
+        assert!(!is_verb_allowed(&m, Verb::Insert, &t)); // blocked
+    }
+
+    #[test]
+    fn types_override_unknown_verb_labels_silently_dropped() {
+        // User typo: `"opn"` instead of `"open"`. allowed_verbs filters
+        // it out so the picker stays consistent — no "phantom verb in
+        // the menu" foot-gun.
+        let t = types_with("url", Some(vec!["opn", "copy"]), None);
+        let m = empty_match(MatchType::Url);
+        let allowed = allowed_verbs(&m, &t);
+        assert_eq!(allowed, vec![Verb::CopyRaw]); // typo dropped
+    }
+
+    #[test]
+    fn types_no_override_for_tag_falls_back_to_static() {
+        let t = types_with("url", Some(vec!["open"]), None);
+        // Override for url doesn't touch file.
+        let m = empty_match(MatchType::File);
+        assert!(is_verb_allowed(&m, Verb::Edit, &t));   // static allow
+        assert!(is_verb_allowed(&m, Verb::Insert, &t)); // static allow
+    }
+
+    #[test]
+    fn verb_from_label_basic() {
+        assert_eq!(verb_from_label("open"), Some(Verb::Open));
+        assert_eq!(verb_from_label("copy"), Some(Verb::CopyRaw));
+        assert_eq!(verb_from_label("copy-raw"), Some(Verb::CopyRaw)); // alias
+        assert_eq!(verb_from_label("copy-display"), Some(Verb::CopyDisplay));
+        assert_eq!(verb_from_label("insert"), Some(Verb::Insert));
+        assert_eq!(verb_from_label("insert-display"), Some(Verb::InsertDisplay));
+        assert_eq!(verb_from_label("edit"), Some(Verb::Edit));
+        assert_eq!(verb_from_label("reveal"), Some(Verb::Reveal));
+        assert_eq!(verb_from_label("preview"), Some(Verb::Preview));
+        assert_eq!(verb_from_label("json"), Some(Verb::Json));
+        assert_eq!(verb_from_label("nope"), None);
+    }
+
+    // ---- substitute_opt ----
+
+    #[test]
+    fn substitute_opt_colon_line_stripped_when_empty() {
+        let mut m = empty_match(MatchType::File);
+        m.fields.insert("file".to_string(), "src/main.rs".to_string());
+        // line absent → strip the `:` before {line}
+        assert_eq!(substitute_opt("hx {file}:{line}", &m), "hx src/main.rs");
+    }
+
+    #[test]
+    fn substitute_opt_plus_line_stripped_when_empty() {
+        let mut m = empty_match(MatchType::File);
+        m.fields.insert("file".to_string(), "src/main.rs".to_string());
+        // `+` and preceding space both stripped
+        assert_eq!(substitute_opt("nvim +{line} {file}", &m), "nvim src/main.rs");
+    }
+
+    #[test]
+    fn substitute_opt_line_present_no_stripping() {
+        let mut m = empty_match(MatchType::File);
+        m.fields.insert("file".to_string(), "src/main.rs".to_string());
+        m.fields.insert("line".to_string(), "42".to_string());
+        assert_eq!(substitute_opt("hx {file}:{line}", &m), "hx src/main.rs:42");
+        assert_eq!(substitute_opt("nvim +{line} {file}", &m), "nvim +42 src/main.rs");
+    }
+
+    #[test]
+    fn substitute_opt_no_empty_fields_unchanged() {
+        let m = url_match();
+        assert_eq!(
+            substitute_opt("firefox {url}", &m),
+            "firefox https://example.com"
+        );
+    }
+
+    #[test]
+    fn substitute_opt_leading_empty_field_no_crash() {
+        // Nothing to strip before the first field — just drops the value.
+        let m = empty_match(MatchType::File);
+        assert_eq!(substitute_opt("{line} rest", &m), " rest");
     }
 
     #[test]

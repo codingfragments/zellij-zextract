@@ -105,7 +105,7 @@ fn push(
         raw: raw.to_string(),
         display: raw.to_string(),
         context: context.to_string(),
-        span: (span_start, span_end),
+        label: None, span: (span_start, span_end),
         fields,
     });
 }

@@ -7,6 +7,7 @@
 //! See planning.md Phase 4 for acceptance criteria.
 
 mod action;
+mod config;
 mod extract;
 mod fuzzy;
 mod pattern;
@@ -25,12 +26,66 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Sta
 use zellij_tile::prelude::*;
 
 use crate::action::{DispatchResult, Verb};
+use crate::config::{should_log, Config, LimitsConfig, LogLevel};
 use crate::extract::{Match, MatchType};
 use crate::fuzzy::{FuzzyEngine, ScoredMatch};
 use crate::query::ParsedQuery;
 
-/// Hardcoded grab cap for Phase 1+2. Becomes configurable in Phase 7.
-const RECENT_LINES: usize = 150;
+/// Log a message at `$level` if `self.config.log_level` allows it.
+/// `$self` is expected to be a `&State` (or anything with `.config`).
+/// Prefix `[zextract] ` is added automatically — call sites pass the
+/// raw message body. The format!() is short-circuited away when the
+/// level is filtered, so cheap when log_level is `off`.
+macro_rules! plog {
+    ($self:expr, $level:expr, $($arg:tt)*) => {
+        if should_log($level, $self.config.log_level) {
+            eprintln!("[zextract] {}", format!($($arg)*));
+        }
+    };
+}
+
+// The Phase 1 hardcoded `RECENT_LINES = 150` is now driven by
+// `config.grab.profiles[current].lines`. See `apply_config_after_load`
+// for how the current profile index is selected and `try_extract`
+// for how its source/lines values shape the scrollback grab.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BannerKind {
+    /// No config file found. Offers Ctrl-W to write defaults.
+    MissingConfig,
+    /// Config file has a parse error. Shows line/col + message.
+    ParseError(String),
+}
+
+/// Written to `~/.config/zellij/zextract.kdl` when the user presses
+/// Ctrl-W on the missing-config banner. Contains sensible defaults with
+/// inline comments explaining each setting.
+const DEFAULT_CONFIG: &str = r#"// zextract configuration
+// Written by Ctrl-W on first launch. Edit to taste.
+// See https://github.com/codingfragments/zellij-zextract for docs.
+
+log_level "info"   // off | error | warn | info | debug
+
+// actions: override the command used for edit/open/reveal per type.
+// Type tags: url, file, diag, sha, ipv4, ipv6, uuid, quote, cmd, secret
+// plus any custom pattern names defined below.
+// {editor} = $EDITOR or "nvim", {file}, {line}, {url}, {match}, {0}, {1}…
+//
+// actions {
+//     diag    { edit command "hx {file}:{line}" }
+//     default { edit command "{editor} +{line} {file}" }
+// }
+
+// patterns: user-defined regex patterns
+//
+// patterns {
+//     jira {
+//         regex    "([A-Z]+)-([0-9]+)"
+//         type     "url"
+//         template "https://jira.example.com/browse/{1}-{2}"
+//     }
+// }
+"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -43,6 +98,34 @@ enum Mode {
 }
 
 struct State {
+    /// True once the async config-load chain has reached a terminal
+    /// state (success OR any failure path: no $HOME, host change
+    /// rejected, file missing, parse error). Used by `render()` to
+    /// gate content display — until the flag is set the picker shows
+    /// a minimal "loading…" placeholder. This avoids the visible
+    /// reflow that would otherwise happen when content renders at
+    /// the keybind's default size, then jumps to the config-driven
+    /// width once apply_config_after_load fires.
+    config_loaded: bool,
+    /// Loaded user config or defaults. Replaced once after plugin
+    /// load completes the host-folder handshake (see HostFolderChanged
+    /// event handler). Until then, all Phase 7-plumbed settings read
+    /// from `Config::default()`. Phase 7's later commits read fields
+    /// from here in place of today's hardcoded constants.
+    ///
+    /// **Timing caveat for config-driven extraction settings:**
+    /// today the extraction kicks off on the first `PaneUpdate` (which
+    /// usually arrives before `HostFolderChanged`), so the FIRST
+    /// extraction uses defaults regardless of what's in the config
+    /// file. Settings that don't affect extraction (UI widths, action
+    /// templates, limits) take effect on first
+    /// render after `HostFolderChanged` — fine. Settings that DO
+    /// affect extraction (`grab.recent_lines`, custom `patterns.*`
+    /// blocks) need a re-extract once config lands — that wiring is
+    /// owed to commit 5 (grab) and commit 8 (custom patterns). Track
+    /// `config_loaded: bool` on State and gate extraction or re-trigger
+    /// it from the HostFolderChanged handler.
+    config: Config,
     matches: Vec<Match>,
     /// The text we extracted from — retained so the preview pane can
     /// render surrounding lines for any selected match. Costs ~12 KB
@@ -66,9 +149,22 @@ struct State {
     /// `change_floating_panes_coordinates` when the preview toggles
     /// (grows the pane to make room).
     own_plugin_id: u32,
+    /// Index into `config.grab.profiles` for the active scrollback-
+    /// grab profile. Set in `apply_config_after_load` from the
+    /// config's `default_profile`. `Ctrl-g` (commit 7c) cycles by
+    /// incrementing this mod profiles.len() and re-extracting.
+    current_grab_profile_index: usize,
     extraction_done: bool,
     mode: Mode,
     preview_open: bool,
+    /// Per-launch overrides from the keybind `configuration` map.
+    /// Applied at the END of `apply_config_after_load` so they win
+    /// over both the file config and the compiled defaults.
+    launch_preview: Option<bool>,
+    launch_grab: Option<String>,
+    /// Bootstrap / error banner shown in the footer area. Dismissed by
+    /// Ctrl-X; parse-error banners are sticky until dismissed or fixed.
+    banner: Option<BannerKind>,
     /// Transient status-bar message. Cleared on the next keystroke.
     /// Phase 9 will time these out; for now any keypress clears.
     message: Option<String>,
@@ -87,6 +183,8 @@ impl Default for State {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         Self {
+            config_loaded: false,
+            config: Config::default(),
             matches: Vec::new(),
             captured_text: String::new(),
             query: String::new(),
@@ -97,9 +195,13 @@ impl Default for State {
             selected: HashSet::new(),
             source_pane: None,
             own_plugin_id: 0,
+            current_grab_profile_index: 0,
             extraction_done: false,
             mode: Mode::Input,
             preview_open: false,
+            launch_preview: None,
+            launch_grab: None,
+            banner: None,
             message: None,
             render_buffer: None,
         }
@@ -109,35 +211,113 @@ impl Default for State {
 register_plugin!(State);
 
 impl ZellijPlugin for State {
-    fn load(&mut self, _configuration: BTreeMap<String, String>) {
+    fn load(&mut self, configuration: BTreeMap<String, String>) {
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
             PermissionType::ReadPaneContents,
             PermissionType::WriteToClipboard,
-            // New for Phase 4:
-            PermissionType::RunCommands,    // open / edit / reveal actions
-            PermissionType::WriteToStdin,   // insert action (write_chars_to_pane_id)
+            PermissionType::RunCommands,
+            PermissionType::WriteToStdin,
+            PermissionType::FullHdAccess,
         ]);
 
+        // `type "url"` or `type "url jira"` in the keybind configuration
+        // map pre-fills the query with the corresponding `#type` tokens:
+        //
+        //   bind "Alt u" { LaunchOrFocusPlugin "zextract.wasm" { type "url"; }; }
+        //
+        // The picker opens with the filter already active, same as if the
+        // user had typed `#url`. Backspaceable like any other query text.
+        // `type "url"` / `type "url jira"` — pre-fill query with #tokens.
+        if let Some(type_val) = configuration.get("type") {
+            let prefilled: String = type_val
+                .split_whitespace()
+                .map(|t| format!("#{t}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !prefilled.is_empty() {
+                self.query = prefilled;
+            }
+        }
+        // `preview "on"|"off"` — force preview open/closed at launch,
+        // overriding the `ui.preview` setting from the config file.
+        if let Some(v) = configuration.get("preview") {
+            self.launch_preview = match v.trim() {
+                "on" | "always" | "true" => Some(true),
+                "off" | "never" | "false" => Some(false),
+                _ => None,
+            };
+        }
+        // `grab "deep"` — start on a specific grab profile by name,
+        // overriding the `grab.default_profile` from the config file.
+        if let Some(v) = configuration.get("grab") {
+            self.launch_grab = Some(v.trim().to_string());
+        }
+
         let ids = get_plugin_ids();
-        eprintln!(
-            "[zextract] plugin loaded; plugin_id={} initial_cwd={:?}",
+        plog!(
+            self,
+            LogLevel::Debug,
+            "plugin loaded; plugin_id={} initial_cwd={:?}",
             ids.plugin_id,
             ids.initial_cwd.display().to_string(),
         );
         self.own_plugin_id = ids.plugin_id;
+        // The probe runs from the PermissionRequestResult handler —
+        // calling change_host_folder before the runtime registers the
+        // grant produces "permission denied" even when the cache
+        // shows FullHdAccess granted.
         subscribe(&[
             EventType::Key,
             EventType::PaneUpdate,
             EventType::PermissionRequestResult,
+            // Phase 7 probe: change_host_folder is async; these events
+            // signal completion / failure.
+            EventType::HostFolderChanged,
+            EventType::FailedToChangeHostFolder,
         ]);
     }
 
     fn update(&mut self, event: Event) -> bool {
         match event {
             Event::PermissionRequestResult(_) => {
+                // Permissions just landed — kick the async two-step
+                // config load: (1) request /host to repoint to $HOME,
+                // (2) read once HostFolderChanged confirms the swap.
+                // If $HOME is missing the async chain never starts, so
+                // mark config_loaded synchronously so the placeholder
+                // clears.
+                if !self.request_host_change_for_config_load() {
+                    self.config_loaded = true;
+                }
                 self.try_extract();
+                true
+            }
+            Event::HostFolderChanged(new_path) => {
+                plog!(
+                    self,
+                    LogLevel::Debug,
+                    "HostFolderChanged: /host -> {:?}",
+                    new_path.display().to_string()
+                );
+                self.load_config_from_host();
+                self.config_loaded = true;
+                // Re-extract with the loaded config so custom patterns and
+                // the configured grab profile take effect even on the first
+                // launch (first extraction ran against defaults).
+                self.extraction_done = false;
+                self.try_extract();
+                true
+            }
+            Event::FailedToChangeHostFolder(err) => {
+                plog!(
+                    self,
+                    LogLevel::Warn,
+                    "FailedToChangeHostFolder: err={err:?}. \
+                     Falling back to defaults."
+                );
+                self.config_loaded = true;
                 true
             }
             Event::PaneUpdate(manifest) => {
@@ -190,18 +370,30 @@ impl ZellijPlugin for State {
             ])
             .split(area);
 
-        self.render_input(chunks[0], &mut local_buf);
-        if self.preview_open {
-            let split = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(chunks[1]);
-            self.render_list(split[0], &mut local_buf);
-            self.render_preview(split[1], &mut local_buf);
+        if !self.config_loaded {
+            // Defer real content until the async config-load chain
+            // completes — avoids the visible reflow that would
+            // otherwise happen when the pane resizes from the
+            // keybind's default size to the config-driven width.
+            render_loading_placeholder(area, &mut local_buf);
         } else {
-            self.render_list(chunks[1], &mut local_buf);
+            self.render_input(chunks[0], &mut local_buf);
+            if self.preview_open {
+                let split = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(chunks[1]);
+                self.render_list(split[0], &mut local_buf);
+                self.render_preview(split[1], &mut local_buf);
+            } else {
+                self.render_list(chunks[1], &mut local_buf);
+            }
+            if self.banner.is_some() {
+                self.render_banner(chunks[2], &mut local_buf);
+            } else {
+                self.render_footer(chunks[2], &mut local_buf);
+            }
         }
-        self.render_footer(chunks[2], &mut local_buf);
 
         render::flush(&local_buf);
         self.render_buffer = Some(local_buf);
@@ -209,34 +401,198 @@ impl ZellijPlugin for State {
 }
 
 impl State {
+    /// Step 2 of the async config load. Called once `HostFolderChanged`
+    /// confirms `/host` now points at `$HOME`. Reads
+    /// `/host/.config/zellij/zextract.kdl`, parses to AST, converts to
+    /// typed `Config`, and replaces `self.config`. On any failure,
+    /// `self.config` stays at its current value (Config::default() if
+    /// this is the first call). Parse errors will surface to the user
+    /// via a banner in a later commit; for now we log and degrade.
+    fn load_config_from_host(&mut self) {
+        let path = "/host/.config/zellij/zextract.kdl";
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                plog!(
+                    self,
+                    LogLevel::Debug,
+                    "config load: no file at {path:?} — using defaults"
+                );
+                self.banner = Some(BannerKind::MissingConfig);
+                return;
+            }
+            Err(e) => {
+                plog!(
+                    self,
+                    LogLevel::Warn,
+                    "config load: read err path={path:?} \
+                     kind={:?} err={e} — using defaults",
+                    e.kind()
+                );
+                return;
+            }
+        };
+        match config::parse::parse(&text) {
+            Ok(nodes) => {
+                self.config = Config::from_ast(&nodes);
+                plog!(
+                    self,
+                    LogLevel::Debug,
+                    "config load: OK ({} bytes, {} top-level nodes)",
+                    text.len(),
+                    nodes.len(),
+                );
+                self.apply_config_after_load();
+            }
+            Err(e) => {
+                plog!(self, LogLevel::Warn, "config load: parse err {e} — using defaults");
+                self.banner = Some(BannerKind::ParseError(e.to_string()));
+            }
+        }
+    }
+
+    /// Write `DEFAULT_CONFIG` to `/host/.config/zellij/zextract.kdl`.
+    /// Called when the user presses Ctrl-W on the missing-config banner.
+    /// On success, dismisses the banner and shows a confirmation message.
+    /// On failure, updates the banner to a parse-error variant with the
+    /// IO error message so the user sees what went wrong.
+    fn write_default_config(&mut self) {
+        let path = "/host/.config/zellij/zextract.kdl";
+        // Guard: never overwrite a file that already exists. The banner
+        // should only be shown when the file is missing, but a double-
+        // check here means a race (e.g. user creating the file externally
+        // between launch and Ctrl-W) can't silently clobber their config.
+        if std::path::Path::new(path).exists() {
+            self.banner = None;
+            self.message = Some("Config file already exists — not overwritten".into());
+            return;
+        }
+        match std::fs::write(path, DEFAULT_CONFIG) {
+            Ok(()) => {
+                self.banner = None;
+                self.message = Some(
+                    "Config written — edit ~/.config/zellij/zextract.kdl and reload".into(),
+                );
+            }
+            Err(e) => {
+                self.banner = Some(BannerKind::ParseError(format!("write failed: {e}")));
+            }
+        }
+    }
+
+    /// Apply config-driven runtime state after a successful load.
+    /// Today: set `preview_open` per the `preview` setting (Always =>
+    /// open at launch), select the active grab profile from
+    /// `default_profile`, and trigger a pane resize so the configured
+    /// preview widths take effect immediately rather than waiting for
+    /// the next preview toggle.
+    fn apply_config_after_load(&mut self) {
+        let initial_preview_open = matches!(
+            self.config.ui.preview,
+            config::PreviewDefault::Always
+        );
+        if self.preview_open != initial_preview_open {
+            self.preview_open = initial_preview_open;
+        }
+        // Resolve default_profile name to a position in profiles.
+        // Phase 7a's grab parser already falls back to the first
+        // profile when the name doesn't match, so this lookup is
+        // guaranteed to find a hit when profiles is non-empty.
+        self.current_grab_profile_index = self
+            .config
+            .grab
+            .profiles
+            .iter()
+            .position(|p| p.name == self.config.grab.default_profile)
+            .unwrap_or(0);
+
+        // Apply keybind launch overrides — these win over the file config.
+        // Set AFTER the config-driven defaults so they always take effect
+        // even if the file says something different.
+        if let Some(force_preview) = self.launch_preview {
+            self.preview_open = force_preview;
+        }
+        if let Some(ref grab_name) = self.launch_grab.clone() {
+            if let Some(idx) = self.config.grab.profiles.iter().position(|p| p.name == *grab_name) {
+                self.current_grab_profile_index = idx;
+            }
+        }
+
+        // Pane resize regardless of preview_open value — picks up
+        // any width changes the user set in config even when preview
+        // starts closed.
+        self.resize_for_preview();
+    }
+
     fn try_extract(&mut self) {
         if self.extraction_done {
             return;
         }
         let Some(source) = self.source_pane else { return };
-        let Ok(contents) = get_pane_scrollback(PaneId::Terminal(source), true) else {
+
+        // Pick up the active grab profile. current_grab_profile_index
+        // was set in apply_config_after_load — or remains 0 (the first
+        // default profile = `quick { source scrollback; lines 150 }`)
+        // if config hasn't loaded yet, which matches the old Phase 1
+        // behavior verbatim.
+        let profile = match self.config.grab.profiles.get(self.current_grab_profile_index) {
+            Some(p) => p.clone(),
+            None => {
+                plog!(self, LogLevel::Warn, "try_extract: no grab profiles available");
+                return;
+            }
+        };
+
+        // `get_full_scrollback` controls whether `lines_above_viewport`
+        // is populated. Required for any scrollback-source profile;
+        // viewport-only profiles save the extra cost.
+        let want_full = matches!(profile.source, config::GrabSource::Scrollback);
+        let Ok(contents) = get_pane_scrollback(PaneId::Terminal(source), want_full) else {
             return;
         };
+
         let mut all = String::new();
-        for line in contents
-            .lines_above_viewport
-            .iter()
-            .chain(contents.viewport.iter())
-        {
-            all.push_str(line);
-            all.push('\n');
+        match profile.source {
+            config::GrabSource::Scrollback => {
+                for line in contents
+                    .lines_above_viewport
+                    .iter()
+                    .chain(contents.viewport.iter())
+                {
+                    all.push_str(line);
+                    all.push('\n');
+                }
+            }
+            config::GrabSource::Viewport => {
+                for line in &contents.viewport {
+                    all.push_str(line);
+                    all.push('\n');
+                }
+            }
         }
-        let trimmed = extract::take_recent(&all, RECENT_LINES);
-        eprintln!(
-            "[zextract] extraction starting; source_pane={source} captured_lines={} chars={}",
+        let trimmed = match profile.lines {
+            Some(n) => extract::take_recent(&all, n as usize),
+            None => all,
+        };
+
+        plog!(
+            self,
+            LogLevel::Debug,
+            "extraction starting; source_pane={source} \
+             profile={:?} source_kind={:?} cap={:?} captured_lines={} chars={}",
+            profile.name,
+            profile.source,
+            profile.lines,
             trimmed.lines().count(),
             trimmed.len(),
         );
-        self.matches = extract::extract(&trimmed);
+        self.matches = extract::extract(&trimmed, &self.config.patterns);
         // Retain the source text for the preview pane.
         self.captured_text = trimmed;
-        eprintln!(
-            "[zextract] extraction done; matches={}",
+        plog!(
+            self,
+            LogLevel::Debug,
+            "extraction done; matches={}",
             self.matches.len()
         );
         self.extraction_done = true;
@@ -250,6 +606,7 @@ impl State {
 
         let only_ctrl = key.has_modifiers(&[KeyModifier::Ctrl]) && key.key_modifiers.len() == 1;
         let only_shift = key.has_modifiers(&[KeyModifier::Shift]) && key.key_modifiers.len() == 1;
+        let only_alt = key.has_modifiers(&[KeyModifier::Alt]) && key.key_modifiers.len() == 1;
 
         // Universal keys handled in both modes.
         match key.bare_key {
@@ -304,6 +661,25 @@ impl State {
                 self.deselect_all();
                 return true;
             }
+            // Alt-g → cycle grab profiles from either mode.
+            BareKey::Char('g') if only_alt => {
+                self.cycle_grab_profile();
+                return true;
+            }
+            // Ctrl-x → dismiss the active banner.
+            BareKey::Char('x') if only_ctrl => {
+                self.banner = None;
+                return true;
+            }
+            // Ctrl-w → write default config file. Only fires when the
+            // MissingConfig banner is showing — silently ignored otherwise
+            // so it can't overwrite a config the user already has.
+            BareKey::Char('w') if only_ctrl => {
+                if matches!(self.banner, Some(BannerKind::MissingConfig)) {
+                    self.write_default_config();
+                }
+                return true;
+            }
             _ => {}
         }
         // Mode-specific routing.
@@ -311,6 +687,22 @@ impl State {
             Mode::Input => self.handle_key_input_mode(key),
             Mode::List => self.handle_key_list_mode(key),
         }
+    }
+
+    /// Advance `current_grab_profile_index` to the next configured
+    /// grab profile (wrapping), clear `extraction_done`, and re-run
+    /// extraction. Status bar reports the new profile + match count
+    /// delta so the user sees whether widening/narrowing helped.
+    fn cycle_grab_profile(&mut self) {
+        if self.config.grab.profiles.is_empty() {
+            return;
+        }
+        let n = self.config.grab.profiles.len();
+        self.current_grab_profile_index = (self.current_grab_profile_index + 1) % n;
+        self.extraction_done = false;
+        self.try_extract();
+        // The active profile name is shown permanently in the input strip
+        // (grab:<name> dim indicator), so no transient status message needed.
     }
 
     fn toggle_preview(&mut self) {
@@ -357,13 +749,19 @@ impl State {
         }
         match key.bare_key {
             BareKey::Char(c) => {
-                // Letter keys are action verbs. Non-shift modifiers
-                // (Ctrl/Alt) reserved for Phase 5 (Ctrl-a, Ctrl-d).
+                // Non-shift modifiers (Ctrl/Alt) reserved for universals.
                 if !(key.has_no_modifiers()
                     || (key.has_modifiers(&[KeyModifier::Shift])
                         && key.key_modifiers.len() == 1))
                 {
                     return false;
+                }
+                // `g` cycles grab profiles — not a verb, handled here
+                // before verb_from_char so it doesn't fall through to
+                // the silent reject.
+                if c == 'g' && key.has_no_modifiers() {
+                    self.cycle_grab_profile();
+                    return true;
                 }
                 let Some(verb) = action::verb_from_char(c) else {
                     return false; // silent reject — key unbound
@@ -381,7 +779,7 @@ impl State {
         let Some(m) = self.current_match().cloned() else {
             return false;
         };
-        self.fire_verb(action::default_verb(&m))
+        self.fire_verb(action::default_verb(&m, &self.config.types))
     }
 
     fn fire_verb(&mut self, verb: Verb) -> bool {
@@ -425,7 +823,7 @@ impl State {
             .filter(|&&i| {
                 self.matches
                     .get(i)
-                    .map(|m| action::is_verb_allowed(m, verb))
+                    .map(|m| action::is_verb_allowed(m, verb, &self.config.types))
                     .unwrap_or(false)
             })
             .copied()
@@ -435,7 +833,7 @@ impl State {
             let sample = targets
                 .first()
                 .and_then(|&i| self.matches.get(i))
-                .map(|m| m.ty.tag())
+                .map(|m| m.effective_tag())
                 .unwrap_or("selection");
             self.message = Some(format!(
                 "'{}' not available for [{}]",
@@ -445,7 +843,7 @@ impl State {
             return true;
         }
 
-        let cap = cap_for_verb(verb);
+        let cap = cap_for_verb(verb, &self.config.limits);
         if allowed.len() > cap {
             self.message = Some(format!(
                 "Refused: {} matches exceeds cap of {} for '{}'",
@@ -506,7 +904,7 @@ impl State {
             Verb::Open | Verb::Reveal => {
                 for &i in &allowed {
                     if let Some(m) = self.matches.get(i).cloned() {
-                        action::dispatch(verb, &m, self.source_pane);
+                        action::dispatch(verb, &m, self.source_pane, &self.config.types, &self.config.actions);
                     }
                 }
                 close_self();
@@ -517,21 +915,26 @@ impl State {
                     self.message = Some("edit: no source pane".into());
                     return true;
                 };
-                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".into());
-                let files: Vec<String> = allowed
+                // Multi-target: fire single-target dispatch per match.
+                // Each match gets its own template (type-specific or default)
+                // with correct {line} handling. Commands join with " && "
+                // so the user can review the whole chain before hitting Enter.
+                let cmds: Vec<String> = allowed
                     .iter()
                     .filter_map(|&i| self.matches.get(i))
-                    .map(|m| {
-                        let f = m
-                            .fields
-                            .get("file")
-                            .map(|s| s.as_str())
-                            .unwrap_or(&m.raw);
-                        action::shell_quote(f)
+                    .filter_map(|m| {
+                        let tag = m.effective_tag();
+                        let tmpl = self.config.actions.overrides.get(tag)
+                            .or_else(|| self.config.actions.overrides.get("default"))
+                            .and_then(|t| t.edit.as_deref())
+                            .unwrap_or(action::DEFAULT_EDIT_TEMPLATE);
+                        let cmd = action::substitute_opt(tmpl, m);
+                        if cmd.is_empty() { None } else { Some(cmd) }
                     })
                     .collect();
-                let cmd = format!("{} {}", editor, files.join(" "));
-                write_chars_to_pane_id(&cmd, PaneId::Terminal(pane_id));
+                if !cmds.is_empty() {
+                    write_chars_to_pane_id(&cmds.join(" && "), PaneId::Terminal(pane_id));
+                }
                 close_self();
                 false
             }
@@ -556,7 +959,7 @@ impl State {
             self.toggle_preview();
             return true;
         }
-        match action::dispatch(verb, m, self.source_pane) {
+        match action::dispatch(verb, m, self.source_pane, &self.config.types, &self.config.actions) {
             DispatchResult::Closed => {
                 close_self();
                 false
@@ -569,7 +972,7 @@ impl State {
                 self.message = Some(format!(
                     "'{}' not available for [{}]",
                     verb.label(),
-                    m.ty.tag()
+                    m.effective_tag()
                 ));
                 true
             }
@@ -628,22 +1031,27 @@ impl State {
     }
 
     /// Ask Zellij to resize our floating pane based on whether preview
-    /// is open. Open → 90% wide, recentered to x=5%. Closed → 70%
-    /// wide, recentered to x=15%. Height unchanged (left None so
-    /// Zellij keeps whatever the keybind set).
-    ///
-    /// Phase 7 will make the open/closed widths configurable.
+    /// is open. Widths come from `config.ui.preview_open_width` and
+    /// `preview_closed_width` (defaults `"90%"` and `"70%"`). For
+    /// percent-shaped widths we recenter the x-coordinate so the pane
+    /// stays centered as it grows/shrinks; for anything else we just
+    /// pass the width through and leave x untouched.
     fn resize_for_preview(&self) {
-        let (x, w) = if self.preview_open { ("5%", "90%") } else { ("15%", "70%") };
+        let w = if self.preview_open {
+            &self.config.ui.preview_open_width
+        } else {
+            &self.config.ui.preview_closed_width
+        };
+        let x = recenter_x_for_width(w);
         let Some(coords) = FloatingPaneCoordinates::new(
-            Some(x.to_string()),
+            x.map(|s| s.to_string()),
             None,                       // keep current y
             Some(w.to_string()),
             None,                       // keep current height
             None,                       // pinned unchanged
             None,                       // borderless unchanged
         ) else {
-            eprintln!("[zextract] resize: failed to build coords");
+            plog!(self, LogLevel::Warn, "resize: failed to build coords for w={w:?}");
             return;
         };
         change_floating_panes_coordinates(vec![(
@@ -666,10 +1074,13 @@ impl State {
         // change at the call site (extend the slice). Cache the result
         // so the renderer can show active filter pills without
         // re-parsing every frame.
-        let tags: Vec<&str> = extract::TYPE_PRIORITY
+        let mut tags: Vec<&str> = extract::TYPE_PRIORITY
             .iter()
             .map(|t| t.tag())
             .collect();
+        for cp in &self.config.patterns.custom {
+            tags.push(&cp.name);
+        }
         self.parsed_query = query::parse_query(&self.query, &tags);
         let parsed = &self.parsed_query;
 
@@ -682,7 +1093,7 @@ impl State {
             .iter()
             .enumerate()
             .filter(|(_, m)| {
-                let tag = m.ty.tag();
+                let tag = m.effective_tag();
                 let include_ok = parsed.includes.is_empty()
                     || parsed.includes.iter().any(|t| t == tag);
                 let exclude_ok = !parsed.excludes.iter().any(|t| t == tag);
@@ -737,12 +1148,31 @@ impl State {
     }
 
     fn render_input(&self, area: Rect, buf: &mut Buffer) {
+        // Grab-profile label width: brackets + name + 1 space each side.
+        // Computed from the longest name in the current profile list so
+        // the box doesn't shift when cycling.
+        let max_name = self
+            .config
+            .grab
+            .profiles
+            .iter()
+            .map(|p| p.name.len())
+            .max()
+            .unwrap_or(5);
+        let grab_label_width = (max_name + 4) as u16; // [name] + 2 spaces
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(1),
+                Constraint::Length(grab_label_width),
+            ])
+            .split(area);
+
         let count_text = if self.matches.is_empty() && !self.extraction_done {
             "(extracting)".to_string()
         } else if self.selected.is_empty() {
             format!("{}/{}", self.filtered.len(), self.matches.len())
         } else {
-            // Selection always-visible in the count: e.g. "3 sel · 18/47"
             format!(
                 "{} sel · {}/{}",
                 self.selected.len(),
@@ -774,8 +1204,6 @@ impl State {
             Span::raw("   "),
         ];
 
-        // Filter pills — one per active include/exclude. Each pill
-        // takes the type's color; excludes prefix with `-`.
         for inc in &self.parsed_query.includes {
             let color = type_color_for_tag(inc);
             spans.push(Span::styled(
@@ -807,7 +1235,20 @@ impl State {
         ));
         Paragraph::new(Line::from(spans))
             .block(Block::default().borders(Borders::ALL).title("zextract"))
-            .render(area, buf);
+            .render(chunks[0], buf);
+
+        // Grab-profile label: vertically centered, normal text color,
+        // bracketed. `g` in List mode cycles it.
+        if let Some(p) = self.config.grab.profiles.get(self.current_grab_profile_index) {
+            let label = format!("[{}]", p.name);
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled(label, Style::default())),
+                Line::from(""),
+            ])
+            .alignment(ratatui::layout::Alignment::Center)
+            .render(chunks[1], buf);
+        }
     }
 
     fn render_list(&mut self, area: Rect, buf: &mut Buffer) {
@@ -855,7 +1296,7 @@ impl State {
                 let mut spans = vec![
                     gutter,
                     Span::styled(
-                        format!("[{}]  ", m.ty.tag()),
+                        format!("[{}]  ", m.effective_tag()),
                         Style::default().fg(type_color(m.ty)),
                     ),
                 ];
@@ -950,9 +1391,9 @@ impl State {
         let mut line1: Vec<Span<'static>> = Vec::new();
 
         if let Some(m) = self.current_match() {
-            let default = action::default_verb(m);
+            let default = action::default_verb(m, &self.config.types);
             line1.push(Span::styled(
-                format!(" {}", m.ty.tag()),
+                format!(" {}", m.effective_tag()),
                 Style::default()
                     .fg(type_color(m.ty))
                     .add_modifier(Modifier::BOLD),
@@ -964,7 +1405,7 @@ impl State {
             // Only show action keys in List mode; in Input mode all those
             // letters go into the query, not actions.
             if matches!(self.mode, Mode::List) {
-                for verb in action::allowed_verbs(m) {
+                for verb in action::allowed_verbs(m, &self.config.types) {
                     if verb == default {
                         continue; // Already shown as Enter:label.
                     }
@@ -1012,6 +1453,8 @@ impl State {
                 Span::raw(":select-all  "),
                 Span::styled("^D", bold),
                 Span::raw(":clear-sel  "),
+                Span::styled("M-g", bold),
+                Span::raw(":grab  "),
             ]);
         }
         line2.push(Span::styled("Esc", bold));
@@ -1028,6 +1471,53 @@ impl State {
         let para = Paragraph::new(vec![Line::from(line1), Line::from(line2)])
             .block(Block::default().borders(Borders::ALL));
         para.render(area, buf);
+    }
+
+    fn render_banner(&self, area: Rect, buf: &mut Buffer) {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let (line1, line2) = match &self.banner {
+            Some(BannerKind::MissingConfig) => (
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled("No config file found", bold),
+                    Span::raw("  —  defaults in use"),
+                ]),
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled("^W", bold),
+                    Span::raw(":write default config    "),
+                    Span::styled("^X", bold),
+                    Span::raw(":dismiss"),
+                ]),
+            ),
+            Some(BannerKind::ParseError(msg)) => (
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(
+                        "Config parse error",
+                        Style::default()
+                            .fg(Color::LightRed)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!("  {msg}")),
+                ]),
+                Line::from(vec![
+                    Span::raw(" Fix "),
+                    Span::styled("~/.config/zellij/zextract.kdl", bold),
+                    Span::raw(" and reload    "),
+                    Span::styled("^X", bold),
+                    Span::raw(":dismiss"),
+                ]),
+            ),
+            None => (Line::from(""), Line::from("")),
+        };
+        Paragraph::new(vec![line1, line2])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .render(area, buf);
     }
 }
 
@@ -1064,21 +1554,89 @@ fn highlight_spans(display: &str, indices: &[u32]) -> Vec<Span<'static>> {
     spans
 }
 
-/// Per-verb cap on multi-target dispatch. Conservative defaults — the
-/// idea is to avoid foot-guns (opening 200 browser tabs by accident,
-/// pasting a 50-row wall of text into the prompt).
+/// Step 1 of the async config load — request that the WASI sandbox's
+/// `/host` preopen repoints to the user's home directory. Called
+/// from `Event::PermissionRequestResult` so we know FullHdAccess has
+/// landed. The actual read fires from `State::load_config_from_host`
+/// on the subsequent `Event::HostFolderChanged`.
 ///
-/// Phase 7 KDL config will expose these as `limits { copy insert open
-/// command json }`. Numbers come from planning.md Q24.
-fn cap_for_verb(verb: Verb) -> usize {
+/// Returns true if the async chain was kicked off (HostFolderChanged
+/// event will fire), false if we gave up synchronously (no $HOME).
+/// The caller uses this to decide whether to leave `config_loaded`
+/// false (event will set it later) or flip it now (no event coming).
+///
+/// Why this dance: the WASI sandbox only preopens `/host`, `/data`,
+/// `/tmp`. Reading the user's `~/.config/zellij/zextract.kdl` requires
+/// reaching `/host/.config/zellij/zextract.kdl` after `/host` has been
+/// repointed at `$HOME`. See planning.md Phase 7 for the rationale.
+impl State {
+    fn request_host_change_for_config_load(&self) -> bool {
+        let home = match std::env::var("HOME") {
+            Ok(h) if !h.is_empty() => h,
+            _ => {
+                plog!(self, LogLevel::Warn, "config load: no $HOME — using defaults");
+                return false;
+            }
+        };
+        plog!(self, LogLevel::Debug, "config load: change_host_folder -> {home:?}");
+        change_host_folder(std::path::PathBuf::from(&home));
+        true
+    }
+}
+
+/// Per-verb cap on multi-target dispatch. User-configurable via the
+/// `limits { ... }` KDL block; defaults come from planning.md Q24
+/// (mirrored in `LimitsConfig::default()`). Preview has no cap — it
+/// affects only the selection cursor, not external side effects.
+fn cap_for_verb(verb: Verb, limits: &LimitsConfig) -> usize {
     match verb {
-        Verb::CopyRaw | Verb::CopyDisplay => 100,
-        Verb::Insert | Verb::InsertDisplay => 5,
-        Verb::Open => 10,
-        Verb::Edit => 5,
-        Verb::Reveal => 10,
-        Verb::Json => 100,
+        Verb::CopyRaw | Verb::CopyDisplay => limits.copy as usize,
+        Verb::Insert | Verb::InsertDisplay => limits.insert as usize,
+        Verb::Open => limits.open as usize,
+        Verb::Edit => limits.edit as usize,
+        Verb::Reveal => limits.reveal as usize,
+        Verb::Json => limits.json as usize,
         Verb::Preview => usize::MAX,
+    }
+}
+
+/// Minimal placeholder shown while the async config-load chain
+/// hasn't completed yet. Renders inside the existing bordered block
+/// so the chrome looks consistent with the loaded state. Lifespan in
+/// practice: ~130 ms from plugin load (initial cwd captured) to
+/// HostFolderChanged event (read + parse complete).
+fn render_loading_placeholder(area: Rect, buf: &mut Buffer) {
+    use ratatui::widgets::Wrap;
+    let para = Paragraph::new("zextract — loading config…")
+        .style(Style::default().fg(Color::DarkGray))
+        .wrap(Wrap { trim: true })
+        .block(Block::default().borders(Borders::ALL).title("zextract"));
+    para.render(area, buf);
+}
+
+/// Compute the recentered x-coordinate for a floating pane of the
+/// given width. For percent widths `"N%"` returns `"(100-N)/2 %"`
+/// so the pane stays centered as the width grows/shrinks. For any
+/// other shape (absolute cells, malformed, etc.) returns `None`
+/// meaning "don't change x, just let Zellij keep the previous one."
+fn recenter_x_for_width(width: &str) -> Option<&'static str> {
+    let percent_str = width.strip_suffix('%')?;
+    let percent: u32 = percent_str.parse().ok()?;
+    if percent >= 100 {
+        return Some("0%");
+    }
+    // Map common percentages to static strings so we don't allocate
+    // each render. The defaults exercise just two values.
+    match (100 - percent) / 2 {
+        0 => Some("0%"),
+        5 => Some("5%"),
+        10 => Some("10%"),
+        15 => Some("15%"),
+        20 => Some("20%"),
+        25 => Some("25%"),
+        // Any unusual width gets None — Zellij keeps the previous x.
+        // Acceptable; rare in practice.
+        _ => None,
     }
 }
 
@@ -1139,5 +1697,37 @@ mod tests {
         // "abcde" with indices [1, 2, 3] → "a"+plain, "bcd"+hi, "e"+plain
         let spans = highlight_spans("abcde", &[1, 2, 3]);
         assert_eq!(spans.len(), 3);
+    }
+
+    // ---- recenter_x_for_width ----
+
+    #[test]
+    fn recenter_x_typical_widths() {
+        assert_eq!(recenter_x_for_width("90%"), Some("5%"));
+        assert_eq!(recenter_x_for_width("70%"), Some("15%"));
+        assert_eq!(recenter_x_for_width("60%"), Some("20%"));
+        assert_eq!(recenter_x_for_width("80%"), Some("10%"));
+        assert_eq!(recenter_x_for_width("50%"), Some("25%"));
+        assert_eq!(recenter_x_for_width("100%"), Some("0%"));
+    }
+
+    #[test]
+    fn recenter_x_oversize_clamps_to_zero() {
+        assert_eq!(recenter_x_for_width("150%"), Some("0%"));
+    }
+
+    #[test]
+    fn recenter_x_non_percent_returns_none() {
+        // Absolute cell widths — let Zellij keep the previous x.
+        assert_eq!(recenter_x_for_width("120"), None);
+        assert_eq!(recenter_x_for_width(""), None);
+        assert_eq!(recenter_x_for_width("nonsense"), None);
+    }
+
+    #[test]
+    fn recenter_x_uncommon_percent_returns_none() {
+        // 77% would recenter to 11.5% — not in our lookup. Fall
+        // through to None so Zellij keeps the previous x.
+        assert_eq!(recenter_x_for_width("77%"), None);
     }
 }

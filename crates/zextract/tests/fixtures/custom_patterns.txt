@@ -1,0 +1,24 @@
+$ cargo run
+   Compiling zextract v0.1.0
+    Finished dev profile in 3.42s
+     Running server on http://localhost:3000
+     API available at http://127.0.0.1:8080/api/v1
+
+$ kubectl get svc
+NAME           TYPE        CLUSTER-IP    PORT(S)
+web-service    ClusterIP   10.0.0.1      :443/TCP
+api-service    NodePort    10.0.0.2      :8080:30080/TCP
+db-service     ClusterIP   10.0.0.3      :5432/TCP
+
+Work items this sprint:
+  PROJ-123  Fix login timeout
+  PROJ-456  Update dependency versions
+  API-789   Rate limiting for /api/v1
+  OPS-42    Rotate :6443 certs
+
+Merged PRs:
+  PROJ-100 merged into main
+  BACKEND-201 cherry-picked to release/2.0
+
+Server listening on :9000
+Metrics exported on :9090

@@ -21,6 +21,10 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
+use regex_lite::Regex;
+
+use crate::config::PatternsConfig;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {
     pub ty: MatchType,
@@ -31,6 +35,18 @@ pub struct Match {
     /// (latest = larger `span.0`) and for the JSON export in Phase 5.
     pub span: (usize, usize),
     pub fields: HashMap<String, String>,
+    /// Display/filter label override for custom patterns. `None` for all
+    /// built-in patterns — `effective_tag()` falls back to `ty.tag()`.
+    pub label: Option<String>,
+}
+
+impl Match {
+    /// The tag used for display, type-filter (`#name`), and the list
+    /// row label. Returns the custom pattern name when set, otherwise
+    /// the built-in type tag (`"url"`, `"file"`, etc.).
+    pub fn effective_tag(&self) -> &str {
+        self.label.as_deref().unwrap_or_else(|| self.ty.tag())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -60,6 +76,22 @@ impl MatchType {
             MatchType::QuotedString => "quote",
             MatchType::Command => "cmd",
             MatchType::Secret => "secret",
+        }
+    }
+
+    pub fn from_tag(s: &str) -> Option<Self> {
+        match s {
+            "url" => Some(Self::Url),
+            "file" => Some(Self::File),
+            "diag" => Some(Self::Diagnostic),
+            "sha" => Some(Self::Sha),
+            "ipv4" => Some(Self::Ipv4),
+            "ipv6" => Some(Self::Ipv6),
+            "uuid" => Some(Self::Uuid),
+            "quote" => Some(Self::QuotedString),
+            "cmd" => Some(Self::Command),
+            "secret" => Some(Self::Secret),
+            _ => None,
         }
     }
 }
@@ -105,7 +137,7 @@ pub fn type_priority_bonus(ty: MatchType) -> i32 {
 
 /// Run all patterns against `text` and return the combined, deduped,
 /// recency-ordered matches.
-pub fn extract(text: &str) -> Vec<Match> {
+pub fn extract(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
     let mut all: Vec<Match> = Vec::new();
     all.extend(crate::pattern::url::extract(text));
     all.extend(crate::pattern::file::extract(text));
@@ -117,9 +149,106 @@ pub fn extract(text: &str) -> Vec<Match> {
     all.extend(crate::pattern::quoted::extract(text));
     all.extend(crate::pattern::command::extract(text));
     all.extend(crate::pattern::secret::extract(text));
+    all.extend(extract_custom(text, patterns));
 
     let pass1 = dedup_keep_latest(all);
     dedup_by_raw_priority(pass1)
+}
+
+/// Run user-defined custom patterns from the `patterns { }` config block.
+/// Each pattern compiles its regex on every call — acceptable for the
+/// small number of user patterns expected. Invalid regexes are silently
+/// skipped (logged at debug level by the caller).
+fn extract_custom(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
+    let mut out = Vec::new();
+    for cp in &patterns.custom {
+        let re = match Regex::new(&cp.regex) {
+            Ok(r) => r,
+            Err(_) => continue, // invalid regex — skip
+        };
+        let ty = MatchType::from_tag(&cp.ty).unwrap_or(MatchType::Url);
+        let mut byte_offset_of_line = 0usize;
+        for line in text.lines() {
+            for caps in re.captures_iter(line) {
+                let full = caps.get(0).unwrap();
+                // If the regex has a capture group, group(1) is `{match}`.
+                // This lets users write patterns like:
+                //   `New Jira ticket : ([A-Z]+-[0-9]+)` — the prefix
+                //   anchors the match but only the ticket ID is captured.
+                // No groups → full match is used (backwards-compatible).
+                let (raw, span_start, span_end) = match caps.get(1) {
+                    Some(g) => (
+                        g.as_str().to_string(),
+                        byte_offset_of_line + g.start(),
+                        byte_offset_of_line + g.end(),
+                    ),
+                    None => (
+                        full.as_str().to_string(),
+                        byte_offset_of_line + full.start(),
+                        byte_offset_of_line + full.end(),
+                    ),
+                };
+                if raw.is_empty() {
+                    continue;
+                }
+                // Build fields for all capture groups:
+                //   {0} = full regex match
+                //   {1} = group 1 (alias: {match}), {2}, {3}, …
+                let mut fields = HashMap::new();
+                let full_str = full.as_str();
+                fields.insert("0".to_string(), full_str.to_string());
+                for i in 1..caps.len() {
+                    if let Some(g) = caps.get(i) {
+                        fields.insert(i.to_string(), g.as_str().to_string());
+                    }
+                }
+                // {match} = group(1) when groups present, else full match.
+                let match_val = caps.get(1)
+                    .map(|g| g.as_str())
+                    .unwrap_or(full_str);
+                fields.insert("match".to_string(), match_val.to_string());
+
+                let expanded = match &cp.template {
+                    Some(tmpl) => {
+                        let mut out = tmpl.clone();
+                        for (key, val) in &fields {
+                            out = out.replace(&format!("{{{key}}}"), val);
+                        }
+                        out
+                    }
+                    None => raw.clone(),
+                };
+
+                // `raw` is the canonical copy/dedup value:
+                //   - Template present: the expanded result (the final URL or
+                //     value the user wants to copy). Keeps each unique
+                //     expansion as a distinct entry after dedup.
+                //   - No template: the regex match text (group 1 or full).
+                let raw = if cp.template.is_some() {
+                    expanded.clone()
+                } else {
+                    raw
+                };
+
+                match ty {
+                    MatchType::Url => { fields.insert("url".to_string(), expanded.clone()); }
+                    MatchType::File => { fields.insert("file".to_string(), expanded.clone()); }
+                    _ => {}
+                }
+                out.push(Match {
+                    ty,
+                    raw: raw.clone(),
+                    display: expanded,
+                    context: line.to_string(),
+                    span: (span_start, span_end),
+                    fields,
+                    label: Some(cp.name.clone()),
+                });
+            }
+            byte_offset_of_line += line.len() + 1;
+        }
+    }
+    out
 }
 
 /// Take the last `n` lines of a scrollback capture. Phase 1 hardcoded
@@ -191,8 +320,10 @@ mod fixture_tests {
     //! ceasing to match its fixture is exactly what these tests find.
     use super::*;
 
+    fn ep() -> PatternsConfig { PatternsConfig::default() }
+
     fn count_by_type(text: &str, ty: MatchType) -> usize {
-        extract(text).into_iter().filter(|m| m.ty == ty).count()
+        extract(text, &ep()).into_iter().filter(|m| m.ty == ty).count()
     }
 
     #[test]
@@ -228,7 +359,7 @@ mod fixture_tests {
     #[test]
     fn secrets_fixture_has_secrets() {
         let text = include_str!("../tests/fixtures/secrets.txt");
-        let matches = extract(text);
+        let matches = extract(text, &ep());
         let secrets: Vec<_> = matches.iter().filter(|m| m.ty == MatchType::Secret).collect();
         assert!(secrets.len() >= 7, "got {} secrets", secrets.len());
         // Verify a mix of curated formats fired.
@@ -244,7 +375,7 @@ mod fixture_tests {
     #[test]
     fn realworld_fixture_finds_diverse_types() {
         let text = include_str!("../tests/fixtures/realworld.txt");
-        let matches = extract(text);
+        let matches = extract(text, &ep());
         let types: std::collections::HashSet<MatchType> =
             matches.iter().map(|m| m.ty).collect();
         // Realworld transcript should exercise at least 5 different types.
@@ -254,7 +385,7 @@ mod fixture_tests {
     #[test]
     fn adversarial_fixture_rejects_near_misses() {
         let text = include_str!("../tests/fixtures/adversarial.txt");
-        let matches = extract(text);
+        let matches = extract(text, &ep());
         // No SHA from "12345678" (pure-numeric).
         assert!(!matches
             .iter()
@@ -271,7 +402,7 @@ mod fixture_tests {
         // "many matches across many types" path that triggered
         // Zellij's wasm growth cap before the buffer-reuse fix.
         let text = include_str!("../tests/fixtures/stress.txt");
-        let matches = extract(text);
+        let matches = extract(text, &ep());
         let types: std::collections::HashSet<MatchType> =
             matches.iter().map(|m| m.ty).collect();
 
@@ -304,16 +435,264 @@ mod fixture_tests {
             );
         }
     }
+
+    #[test]
+    fn multi_group_patterns_fixture() {
+        use crate::config::CustomPattern;
+        let text = include_str!("../tests/fixtures/multi_group_patterns.txt");
+
+        let patterns = PatternsConfig {
+            custom: vec![
+                CustomPattern {
+                    name: "port".to_string(),
+                    regex: r":[0-9]{4,5}\b".to_string(),
+                    ty: "url".to_string(),
+                    template: None,
+                },
+                CustomPattern {
+                    name: "jira".to_string(),
+                    regex: r"([A-Z]+)-([0-9]+[A-Z]*)".to_string(),
+                    ty: "url".to_string(),
+                    template: Some("https://jira.example.com/browse/{1}-{2}".to_string()),
+                },
+                CustomPattern {
+                    name: "github-pr".to_string(),
+                    regex: r"github\.com/([^/\s]+)/([^/\s]+)/pull/([0-9]+)".to_string(),
+                    ty: "url".to_string(),
+                    template: Some("https://github.com/{1}/{2}/pull/{3}".to_string()),
+                },
+            ],
+        };
+
+        let matches = extract(text, &patterns);
+
+        // Port: :3000, :9090, :8080
+        let ports: Vec<_> = matches.iter()
+            .filter(|m| m.label.as_deref() == Some("port"))
+            .collect();
+        assert!(ports.len() >= 3, "expected ≥3 port matches, got {}", ports.len());
+
+        // Jira: ST-154R, BACKEND-42, FRONTEND-7, OPS-100 + git log refs
+        let jira: Vec<_> = matches.iter()
+            .filter(|m| m.label.as_deref() == Some("jira"))
+            .collect();
+        assert!(jira.len() >= 4, "expected ≥4 jira matches, got {}", jira.len());
+
+        // ST-154R: group 1 = "ST", group 2 = "154R", display = full URL
+        let st = jira.iter().find(|m| m.fields.get("2").map(|s| s.as_str()) == Some("154R"));
+        let st = st.expect("ST-154R not found");
+        assert_eq!(st.fields.get("1").unwrap(), "ST");
+        assert_eq!(st.fields.get("2").unwrap(), "154R");
+        assert_eq!(st.display, "https://jira.example.com/browse/ST-154R");
+        assert_eq!(st.fields.get("url").unwrap(), "https://jira.example.com/browse/ST-154R");
+
+        // GitHub PRs: 3 distinct PRs across 2 orgs
+        let prs: Vec<_> = matches.iter()
+            .filter(|m| m.label.as_deref() == Some("github-pr"))
+            .collect();
+        assert!(prs.len() >= 3, "expected ≥3 PR matches, got {}", prs.len());
+
+        // PR #99: org=myorg, repo=myrepo, number=99
+        let pr99 = prs.iter().find(|m| m.fields.get("3").map(|s| s.as_str()) == Some("99"));
+        let pr99 = pr99.expect("PR #99 not found");
+        assert_eq!(pr99.fields.get("1").unwrap(), "myorg");
+        assert_eq!(pr99.fields.get("2").unwrap(), "myrepo");
+        assert_eq!(pr99.display, "https://github.com/myorg/myrepo/pull/99");
+
+        // Cross-org PR: otherorg/otherrepo/pull/7
+        let pr7 = prs.iter().find(|m| m.fields.get("1").map(|s| s.as_str()) == Some("otherorg"));
+        let pr7 = pr7.expect("cross-org PR not found");
+        assert_eq!(pr7.display, "https://github.com/otherorg/otherrepo/pull/7");
+    }
+
+    #[test]
+    fn custom_patterns_fixture_port_and_jira() {
+        use crate::config::CustomPattern;
+        let text = include_str!("../tests/fixtures/custom_patterns.txt");
+
+        let patterns = PatternsConfig {
+            custom: vec![
+                CustomPattern {
+                    name: "port".to_string(),
+                    regex: r":[0-9]{4,5}\b".to_string(),
+                    ty: "url".to_string(),
+                    template: None,
+                },
+                CustomPattern {
+                    name: "jira".to_string(),
+                    regex: r"[A-Z]+-[0-9]+".to_string(),
+                    ty: "url".to_string(),
+                    template: Some("https://jira.example.com/browse/{match}".to_string()),
+                },
+            ],
+        };
+
+        let matches = extract(text, &patterns);
+
+        // Port pattern: :3000, :8080, :5432, :443, :6443, :9000, :9090
+        let ports: Vec<_> = matches.iter()
+            .filter(|m| m.raw.starts_with(':'))
+            .collect();
+        assert!(ports.len() >= 4, "expected ≥4 port matches, got {}: {:?}",
+            ports.len(), ports.iter().map(|m| &m.raw).collect::<Vec<_>>());
+
+        // Jira pattern: PROJ-123, PROJ-456, API-789, OPS-42, PROJ-100, BACKEND-201
+        // Use display to check template was applied
+        let jira_by_display: Vec<_> = matches.iter()
+            .filter(|m| m.display.contains("jira.example.com"))
+            .collect();
+        assert!(jira_by_display.len() >= 4,
+            "expected ≥4 jira matches with template applied, got {}: {:?}",
+            jira_by_display.len(),
+            jira_by_display.iter().map(|m| &m.display).collect::<Vec<_>>());
+
+        // Template expands correctly; raw = expanded URL
+        let proj123 = matches.iter()
+            .find(|m| m.display == "https://jira.example.com/browse/PROJ-123")
+            .unwrap();
+        assert_eq!(proj123.raw, "https://jira.example.com/browse/PROJ-123");
+        assert_eq!(proj123.fields.get("url").unwrap(),
+            "https://jira.example.com/browse/PROJ-123");
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn ep() -> PatternsConfig { PatternsConfig::default() }
+
+    fn patterns_with(name: &str, regex: &str, ty: &str, template: Option<&str>) -> PatternsConfig {
+        use crate::config::CustomPattern;
+        PatternsConfig {
+            custom: vec![CustomPattern {
+                name: name.to_string(),
+                regex: regex.to_string(),
+                ty: ty.to_string(),
+                template: template.map(String::from),
+            }],
+        }
+    }
+
+    #[test]
+    fn custom_pattern_basic_match() {
+        let p = patterns_with("jira", r"[A-Z]+-\d+", "url",
+            Some("https://jira.example.com/browse/{match}"));
+        let text = "Fix PROJ-123 and PROJ-456 soon";
+        let matches = extract(text, &p);
+        // raw = expanded URL (template present); filter by label
+        let jira: Vec<_> = matches.iter()
+            .filter(|m| m.label.as_deref() == Some("jira"))
+            .collect();
+        assert_eq!(jira.len(), 2);
+        assert_eq!(jira[0].ty, MatchType::Url);
+        assert!(jira[0].display.contains("jira.example.com"));
+        assert!(jira[0].display.contains("PROJ-"));
+        assert!(jira[0].fields.get("url").unwrap().contains("jira.example.com"));
+    }
+
+    #[test]
+    fn custom_pattern_capture_group_context_prefix() {
+        // Template present → raw = expanded URL (unique dedup key).
+        let p = patterns_with("jira",
+            r"New Jira ticket : ([A-Z]+-[0-9]+[A-Z]*)",
+            "url",
+            Some("https://jira.example.com/browse/{match}"));
+        let text = "New Jira ticket : ST-154R";
+        let matches = extract(text, &p);
+        let m = matches.iter().find(|m| m.label.as_deref() == Some("jira")).unwrap();
+        assert_eq!(m.raw, "https://jira.example.com/browse/ST-154R");
+        assert_eq!(m.display, "https://jira.example.com/browse/ST-154R");
+        assert_eq!(m.fields.get("match").unwrap(), "ST-154R");
+    }
+
+    #[test]
+    fn custom_pattern_multi_group_template() {
+        // 3 groups; raw = expanded URL so each unique PR survives dedup.
+        let p = patterns_with("pr",
+            r"github\.com/([^/]+)/([^/]+)/pull/([0-9]+)",
+            "url",
+            Some("https://github.com/{1}/{2}/pull/{3}"));
+        let text = "see github.com/myorg/myrepo/pull/42 for details";
+        let matches = extract(text, &p);
+        let m = matches.iter().find(|m| m.label.as_deref() == Some("pr")).unwrap();
+        assert_eq!(m.raw, "https://github.com/myorg/myrepo/pull/42");
+        assert_eq!(m.display, "https://github.com/myorg/myrepo/pull/42");
+        assert_eq!(m.fields.get("1").unwrap(), "myorg");
+        assert_eq!(m.fields.get("2").unwrap(), "myrepo");
+        assert_eq!(m.fields.get("3").unwrap(), "42");
+        assert_eq!(m.fields.get("0").unwrap(), "github.com/myorg/myrepo/pull/42");
+    }
+
+    #[test]
+    fn custom_pattern_group0_full_match_in_template() {
+        // {0} gives the full match even when groups exist
+        let p = patterns_with("tagged",
+            r"PREFIX:([A-Z]+)",
+            "cmd",
+            Some("echo full={0} id={1}"));
+        let text = "see PREFIX:HELLO here";
+        let matches = extract(text, &p);
+        let m = matches.iter().find(|m| m.label.as_deref() == Some("tagged")).unwrap();
+        assert_eq!(m.display, "echo full=PREFIX:HELLO id=HELLO");
+    }
+
+    #[test]
+    fn custom_pattern_match_alias_for_group1() {
+        // {match} and {1} are equivalent
+        let p = patterns_with("jira", r"([A-Z]+-[0-9]+)", "url",
+            Some("{match} == {1}"));
+        let text = "fix PROJ-99";
+        let matches = extract(text, &p);
+        let m = matches.iter().find(|m| m.label.as_deref() == Some("jira")).unwrap();
+        assert_eq!(m.display, "PROJ-99 == PROJ-99");
+    }
+
+    #[test]
+    fn custom_pattern_no_groups_with_template_raw_is_expanded() {
+        // No groups + template → raw = expanded URL.
+        let p = patterns_with("jira", r"[A-Z]+-[0-9]+", "url",
+            Some("https://jira.example.com/browse/{match}"));
+        let text = "Fix PROJ-123 today";
+        let matches = extract(text, &p);
+        let m = matches.iter().find(|m| m.label.as_deref() == Some("jira")).unwrap();
+        assert_eq!(m.raw, "https://jira.example.com/browse/PROJ-123");
+    }
+
+    #[test]
+    fn custom_pattern_no_template_raw_is_match_text() {
+        // No template → raw = the regex match text itself.
+        let p = patterns_with("ticket", r"[A-Z]+-[0-9]+", "cmd", None);
+        let text = "Fix PROJ-123 today";
+        let matches = extract(text, &p);
+        let m = matches.iter().find(|m| m.label.as_deref() == Some("ticket")).unwrap();
+        assert_eq!(m.raw, "PROJ-123");
+    }
+
+    #[test]
+    fn custom_pattern_no_template_display_equals_raw() {
+        let p = patterns_with("sha256", r"[0-9a-f]{64}", "sha", None);
+        let hash = "a".repeat(64);
+        let text = format!("hash: {hash}");
+        let matches = extract(&text, &p);
+        // May or may not match depending on built-in sha — just verify
+        // no panic on None template.
+        let _ = matches.iter().find(|m| m.ty == MatchType::Sha);
+    }
+
+    #[test]
+    fn custom_pattern_invalid_regex_skipped() {
+        let p = patterns_with("bad", r"[unclosed", "url", None);
+        // Should not panic; just return built-in matches.
+        let text = "https://example.com";
+        let matches = extract(text, &p);
+        assert!(!matches.is_empty()); // built-in URL still works
+    }
+
     #[test]
     fn dedupes_keeping_latest() {
         let text = "first https://a.example.com/x\nlast https://a.example.com/x";
-        let m = extract(text);
+        let m = extract(text, &ep());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].context, "last https://a.example.com/x");
     }
@@ -323,7 +702,7 @@ mod tests {
         // `src/main.rs:42:8` matches BOTH file and diagnostic. With
         // diagnostic ranked above file in TYPE_PRIORITY, the diag wins.
         let text = "error at src/main.rs:42:8";
-        let m = extract(text);
+        let m = extract(text, &ep());
         let same_raw: Vec<_> = m.iter().filter(|x| x.raw == "src/main.rs:42:8").collect();
         assert_eq!(same_raw.len(), 1, "got: {same_raw:?}");
         assert_eq!(same_raw[0].ty, MatchType::Diagnostic);
@@ -346,7 +725,7 @@ mod tests {
     #[test]
     fn recency_order_latest_first() {
         let text = "first https://a.example.com\nsecond https://b.example.com";
-        let m = extract(text);
+        let m = extract(text, &ep());
         assert_eq!(m[0].raw, "https://b.example.com");
         assert_eq!(m[1].raw, "https://a.example.com");
     }

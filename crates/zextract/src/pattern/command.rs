@@ -259,7 +259,7 @@ fn make_match(raw: String, context: String, span_start: usize, span_end: usize) 
         raw: raw.clone(),
         display: raw,
         context,
-        span: (span_start, span_end),
+        label: None, span: (span_start, span_end),
         fields,
     }
 }
