@@ -327,39 +327,50 @@ defaults and allow-lists, source-pane insert via Phase 0 spike A.
 - Unit tests for cap enforcement.
 - Manual: every multi-select × action combination from the matrix.
 
-## Phase 6 — Inline `#type` filter + type-preset launch args
+## Phase 6 — Inline `#type` filter
 
-**Goal:** Query-driven type filtering and per-type keybindings.
+**Goal:** Query-driven type filtering.
 
 **In scope:**
 - Query parser handles `#type` tokens:
   - `#url` → include filter
   - `#!secret` → exclude filter
   - `##main` → escape (literal `#main` fuzzy token)
+  - **`#X` with X as a unique prefix** → resolves to that type
+    (`#ur` = url, `#sh` = sha, `#se` = secret, etc.)
+  - Ambiguous prefix (multiple tags match) → no filter, literal fuzzy
   - Unknown type name → pass through as literal fuzzy token
-- Active-filter pills shown in the stats strip above the list.
+- Tokenizer parameterized on a `known_tags: &[&str]` slice (NOT
+  hardcoded) so v2 can extend with user-defined custom-pattern type
+  names from KDL config.
+- Active-filter pills shown in the input strip with the type's palette
+  color; excludes shown dim-gray with `-` prefix.
 - Filters update live as the query is edited.
 - Tab to List mode preserves active filters.
-- Type-preset launch arguments per Q27:
-  - Plugin reads `configuration` map from Zellij launch event.
-  - If `type "url"` set → pre-apply `#url` filter.
-  - If `type "url file"` set → pre-apply both.
-  - Backspaceable from Input mode if user wants to broaden.
+
+**Deferred to Phase 7** (lands with the KDL config that gives users
+keybind authoring control anyway):
+- Type-preset launch arguments. Plugin reads `configuration` map
+  from Zellij launch event; if `type "url"` set, pre-apply `#url`
+  filter. Backspaceable like a typed pill. Lives in Phase 7 because
+  it's a config-bound keybind feature and Phase 7 owns the config story.
 
 **Out of scope:**
 - Tab-completion of type names in `#` token (deferred to v2).
 
 **Acceptance:**
 - Typing `#url install` filters to URLs containing "install".
+- Typing `#ur` activates the URL filter mid-typing (unique prefix).
+- Typing `#u` shows no pill yet (ambiguous: url/uuid).
 - Typing `##main` does NOT filter; searches for "#main".
-- `LaunchOrFocusPlugin "zextract" { type "url" }` opens with URL filter
-  already active and a pill visible.
-- Removing a pill via backspace re-broadens the list immediately.
+- Backspacing `#url` to `#u` removes the pill mid-typing.
 
 **Tests:**
-- Unit tests for the query parser (sigil handling, escape, negation,
-  unknown-type passthrough).
-- Manual: each filter syntax case + preset bindings.
+- 20 unit tests in `query::tests` covering: exact/prefix matches,
+  ambiguous-fallback, unknown-fallback, escapes, multiple filters,
+  token-order independence, case-insensitivity, caller-supplied tag
+  sets (proves v2 extension path).
+- Manual: each filter syntax case against the stress fixture.
 
 ## Phase 7 — Config file loading + bootstrap
 
@@ -401,6 +412,14 @@ via `~/.config/zellij/zextract.kdl`.
       ```
     Plus optional `bind "Ctrl 1" profile "quick"` style direct-jump
     bindings (deferred from v1 if too much surface).
+  - **Type-preset launch args** (carried over from Phase 6 deferral):
+    plugin reads the `configuration` map at `Load`; if it sees
+    `type "url"` or `type "url file"`, prepends the corresponding
+    `#type` tokens to `self.query` so the picker opens with the
+    filter already active. The existing Phase-6 tokenizer + pill
+    rendering handles the rest. Lets users wire dedicated keybinds
+    like `bind "u" { LaunchOrFocusPlugin "..." { type "url"; }; }`
+    for an Alt-U-style "URLs only" picker.
   - `patterns { url {...} file {...} ... secret { formats {...} entropy_fallback {...} } command { prompts triggers continuation_strip } }`
   - `types { url { actions [...] default ... } ... }`
   - `actions { url { open command "..." } file { edit command "..." reveal command "..." } ... }`
