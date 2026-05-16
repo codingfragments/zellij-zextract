@@ -999,12 +999,22 @@ impl State {
     }
 
     fn render_input(&self, area: Rect, buf: &mut Buffer) {
+        // Grab-profile label to the right of the input box. Width is the
+        // longest profile name + 4 chars padding. `viewport` (8) + 4 = 12.
+        let grab_label_width: u16 = 12;
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(1),
+                Constraint::Length(grab_label_width),
+            ])
+            .split(area);
+
         let count_text = if self.matches.is_empty() && !self.extraction_done {
             "(extracting)".to_string()
         } else if self.selected.is_empty() {
             format!("{}/{}", self.filtered.len(), self.matches.len())
         } else {
-            // Selection always-visible in the count: e.g. "3 sel · 18/47"
             format!(
                 "{} sel · {}/{}",
                 self.selected.len(),
@@ -1036,8 +1046,6 @@ impl State {
             Span::raw("   "),
         ];
 
-        // Filter pills — one per active include/exclude. Each pill
-        // takes the type's color; excludes prefix with `-`.
         for inc in &self.parsed_query.includes {
             let color = type_color_for_tag(inc);
             spans.push(Span::styled(
@@ -1062,20 +1070,6 @@ impl State {
         }
 
         spans.push(Span::styled(count_text, Style::default().fg(Color::DarkGray)));
-        // Active grab profile name — small dim indicator so users
-        // remember which slice of scrollback they're searching.
-        if let Some(p) = self
-            .config
-            .grab
-            .profiles
-            .get(self.current_grab_profile_index)
-        {
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                format!("grab:{}", p.name),
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
-            ));
-        }
         spans.push(Span::raw("   "));
         spans.push(Span::styled(
             mode_tag,
@@ -1083,7 +1077,24 @@ impl State {
         ));
         Paragraph::new(Line::from(spans))
             .block(Block::default().borders(Borders::ALL).title("zextract"))
-            .render(area, buf);
+            .render(chunks[0], buf);
+
+        // Grab-profile label: vertically centered in the 3-row strip
+        // (row 0 = top border height, row 1 = content, row 2 = bottom).
+        // Shows the active profile name; `g` in List mode cycles it.
+        if let Some(p) = self.config.grab.profiles.get(self.current_grab_profile_index) {
+            let label = format!(" {} ", p.name);
+            let label_style = Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD);
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled(label, label_style)),
+                Line::from(""),
+            ])
+            .alignment(ratatui::layout::Alignment::Center)
+            .render(chunks[1], buf);
+        }
     }
 
     fn render_list(&mut self, area: Rect, buf: &mut Buffer) {
