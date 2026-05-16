@@ -49,6 +49,44 @@ macro_rules! plog {
 // for how the current profile index is selected and `try_extract`
 // for how its source/lines values shape the scrollback grab.
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BannerKind {
+    /// No config file found. Offers Ctrl-W to write defaults.
+    MissingConfig,
+    /// Config file has a parse error. Shows line/col + message.
+    ParseError(String),
+}
+
+/// Written to `~/.config/zellij/zextract.kdl` when the user presses
+/// Ctrl-W on the missing-config banner. Contains sensible defaults with
+/// inline comments explaining each setting.
+const DEFAULT_CONFIG: &str = r#"// zextract configuration
+// Written by Ctrl-W on first launch. Edit to taste.
+// See https://github.com/codingfragments/zellij-zextract for docs.
+
+log_level "info"   // off | error | warn | info | debug
+
+// actions: override the command used for edit/open/reveal per type.
+// Type tags: url, file, diag, sha, ipv4, ipv6, uuid, quote, cmd, secret
+// plus any custom pattern names defined below.
+// {editor} = $EDITOR or "nvim", {file}, {line}, {url}, {match}, {0}, {1}…
+//
+// actions {
+//     diag    { edit command "hx {file}:{line}" }
+//     default { edit command "{editor} +{line} {file}" }
+// }
+
+// patterns: user-defined regex patterns
+//
+// patterns {
+//     jira {
+//         regex    "([A-Z]+)-([0-9]+)"
+//         type     "url"
+//         template "https://jira.example.com/browse/{1}-{2}"
+//     }
+// }
+"#;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     /// User is editing the query. Plain printable chars type into the
@@ -124,6 +162,9 @@ struct State {
     /// over both the file config and the compiled defaults.
     launch_preview: Option<bool>,
     launch_grab: Option<String>,
+    /// Bootstrap / error banner shown in the footer area. Dismissed by
+    /// Ctrl-X; parse-error banners are sticky until dismissed or fixed.
+    banner: Option<BannerKind>,
     /// Transient status-bar message. Cleared on the next keystroke.
     /// Phase 9 will time these out; for now any keypress clears.
     message: Option<String>,
@@ -160,6 +201,7 @@ impl Default for State {
             preview_open: false,
             launch_preview: None,
             launch_grab: None,
+            banner: None,
             message: None,
             render_buffer: None,
         }
@@ -346,7 +388,11 @@ impl ZellijPlugin for State {
             } else {
                 self.render_list(chunks[1], &mut local_buf);
             }
-            self.render_footer(chunks[2], &mut local_buf);
+            if self.banner.is_some() {
+                self.render_banner(chunks[2], &mut local_buf);
+            } else {
+                self.render_footer(chunks[2], &mut local_buf);
+            }
         }
 
         render::flush(&local_buf);
@@ -372,6 +418,7 @@ impl State {
                     LogLevel::Debug,
                     "config load: no file at {path:?} — using defaults"
                 );
+                self.banner = Some(BannerKind::MissingConfig);
                 return;
             }
             Err(e) => {
@@ -398,11 +445,37 @@ impl State {
                 self.apply_config_after_load();
             }
             Err(e) => {
-                plog!(
-                    self,
-                    LogLevel::Warn,
-                    "config load: parse err {e} — using defaults"
+                plog!(self, LogLevel::Warn, "config load: parse err {e} — using defaults");
+                self.banner = Some(BannerKind::ParseError(e.to_string()));
+            }
+        }
+    }
+
+    /// Write `DEFAULT_CONFIG` to `/host/.config/zellij/zextract.kdl`.
+    /// Called when the user presses Ctrl-W on the missing-config banner.
+    /// On success, dismisses the banner and shows a confirmation message.
+    /// On failure, updates the banner to a parse-error variant with the
+    /// IO error message so the user sees what went wrong.
+    fn write_default_config(&mut self) {
+        let path = "/host/.config/zellij/zextract.kdl";
+        // Guard: never overwrite a file that already exists. The banner
+        // should only be shown when the file is missing, but a double-
+        // check here means a race (e.g. user creating the file externally
+        // between launch and Ctrl-W) can't silently clobber their config.
+        if std::path::Path::new(path).exists() {
+            self.banner = None;
+            self.message = Some("Config file already exists — not overwritten".into());
+            return;
+        }
+        match std::fs::write(path, DEFAULT_CONFIG) {
+            Ok(()) => {
+                self.banner = None;
+                self.message = Some(
+                    "Config written — edit ~/.config/zellij/zextract.kdl and reload".into(),
                 );
+            }
+            Err(e) => {
+                self.banner = Some(BannerKind::ParseError(format!("write failed: {e}")));
             }
         }
     }
@@ -591,6 +664,20 @@ impl State {
             // Alt-g → cycle grab profiles from either mode.
             BareKey::Char('g') if only_alt => {
                 self.cycle_grab_profile();
+                return true;
+            }
+            // Ctrl-x → dismiss the active banner.
+            BareKey::Char('x') if only_ctrl => {
+                self.banner = None;
+                return true;
+            }
+            // Ctrl-w → write default config file. Only fires when the
+            // MissingConfig banner is showing — silently ignored otherwise
+            // so it can't overwrite a config the user already has.
+            BareKey::Char('w') if only_ctrl => {
+                if matches!(self.banner, Some(BannerKind::MissingConfig)) {
+                    self.write_default_config();
+                }
                 return true;
             }
             _ => {}
@@ -1384,6 +1471,53 @@ impl State {
         let para = Paragraph::new(vec![Line::from(line1), Line::from(line2)])
             .block(Block::default().borders(Borders::ALL));
         para.render(area, buf);
+    }
+
+    fn render_banner(&self, area: Rect, buf: &mut Buffer) {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let (line1, line2) = match &self.banner {
+            Some(BannerKind::MissingConfig) => (
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled("No config file found", bold),
+                    Span::raw("  —  defaults in use"),
+                ]),
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled("^W", bold),
+                    Span::raw(":write default config    "),
+                    Span::styled("^X", bold),
+                    Span::raw(":dismiss"),
+                ]),
+            ),
+            Some(BannerKind::ParseError(msg)) => (
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(
+                        "Config parse error",
+                        Style::default()
+                            .fg(Color::LightRed)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!("  {msg}")),
+                ]),
+                Line::from(vec![
+                    Span::raw(" Fix "),
+                    Span::styled("~/.config/zellij/zextract.kdl", bold),
+                    Span::raw(" and reload    "),
+                    Span::styled("^X", bold),
+                    Span::raw(":dismiss"),
+                ]),
+            ),
+            None => (Line::from(""), Line::from("")),
+        };
+        Paragraph::new(vec![line1, line2])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .render(area, buf);
     }
 }
 
