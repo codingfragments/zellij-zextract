@@ -261,8 +261,10 @@ impl ZellijPlugin for State {
         if let Some(v) = configuration.get("grab") {
             self.launch_grab = Some(v.trim().to_string());
         }
-        // `title "My Picker"` — floating pane title. Defaults to "zextract".
-        if let Some(v) = configuration.get("name") {
+        // `pane_title "My Picker"` — floating pane title. Defaults to "zextract".
+        // Use pane_title (not "name" or "title" — Zellij consumes those
+        // itself and does not forward them to the plugin configuration map).
+        if let Some(v) = configuration.get("pane_title") {
             let t = v.trim().to_string();
             if !t.is_empty() {
                 self.pane_title = t;
