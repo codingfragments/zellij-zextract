@@ -264,6 +264,46 @@ mod fixture_tests {
             .iter()
             .any(|m| m.ty == MatchType::Ipv4 && m.raw.starts_with("999.")));
     }
+
+    #[test]
+    fn stress_fixture_dense_mixed_corpus() {
+        // 260+ line realistic transcript — exercises the
+        // "many matches across many types" path that triggered
+        // Zellij's wasm growth cap before the buffer-reuse fix.
+        let text = include_str!("../tests/fixtures/stress.txt");
+        let matches = extract(text);
+        let types: std::collections::HashSet<MatchType> =
+            matches.iter().map(|m| m.ty).collect();
+
+        // Diverse — at least 7 of the 10 v1 types fire.
+        assert!(
+            types.len() >= 7,
+            "stress fixture should exercise ≥7 types, got {} ({:?})",
+            types.len(),
+            types
+        );
+
+        // Dense — enough matches to stress the per-frame allocator.
+        assert!(
+            matches.len() >= 40,
+            "stress fixture should yield ≥40 matches, got {}",
+            matches.len()
+        );
+
+        // Each of the most-common types should fire at least once.
+        for required in [
+            MatchType::Url,
+            MatchType::File,
+            MatchType::Command,
+            MatchType::Sha,
+            MatchType::Secret,
+        ] {
+            assert!(
+                matches.iter().any(|m| m.ty == required),
+                "stress fixture missing required type {required:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
