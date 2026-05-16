@@ -154,7 +154,12 @@ pub enum DispatchResult {
     Rejected,
 }
 
-pub fn dispatch(verb: Verb, m: &Match, source_pane: Option<u32>) -> DispatchResult {
+pub fn dispatch(
+    verb: Verb,
+    m: &Match,
+    source_pane: Option<u32>,
+    editor_fallback: &str,
+) -> DispatchResult {
     if !is_verb_allowed(m, verb) {
         return DispatchResult::Rejected;
     }
@@ -170,7 +175,7 @@ pub fn dispatch(verb: Verb, m: &Match, source_pane: Option<u32>) -> DispatchResu
         Verb::Insert => insert_text(&m.raw, source_pane),
         Verb::InsertDisplay => insert_text(&m.display, source_pane),
         Verb::Open => run_open(m),
-        Verb::Edit => run_edit(m, source_pane),
+        Verb::Edit => run_edit(m, source_pane, editor_fallback),
         Verb::Reveal => run_reveal(m),
         Verb::Preview => DispatchResult::StayOpen, // Phase 8 wires real preview
         Verb::Json => {
@@ -181,6 +186,15 @@ pub fn dispatch(verb: Verb, m: &Match, source_pane: Option<u32>) -> DispatchResu
             DispatchResult::Closed
         }
     }
+}
+
+/// Resolve the editor command. `$EDITOR` wins when set (matches standard
+/// CLI tool behavior — `git`, `crontab`, etc.); falls back to the
+/// user-configured `editor_command_prefix` from `zextract.kdl`, which
+/// itself defaults to `nvim`. Exposed for the multi-target edit path
+/// in main.rs to share the same resolution logic.
+pub fn resolve_editor(fallback: &str) -> String {
+    std::env::var("EDITOR").unwrap_or_else(|_| fallback.to_string())
 }
 
 /// Serialize a slice of Match references to a compact, single-line
@@ -286,29 +300,29 @@ fn run_open(m: &Match) -> DispatchResult {
 /// the editor as a background subprocess via `run_command` would
 /// silently detach (was the earlier "nothing happens" symptom).
 ///
-/// Template (Phase 4 hardcoded; Phase 7 KDL config will expose
-/// `editor_command_prefix` and a per-type override):
+/// Template:
 ///   - With line: `<editor> +<line> <quoted-path>`
 ///   - Without line: `<editor> <quoted-path>`
 ///
 /// The `+<line>` form is what nvim / vim / less / many editors accept.
-/// VSCode-style users will override the template in Phase 7 to
-/// something like `code -g <path>:<line>`.
+/// VSCode-style users override `editor_command_prefix` to something
+/// like `code -g`, then handle `+<line>` themselves on their wrapper
+/// (`actions { url { edit command "code -g {file}:{line}" } }` once
+/// per-type templates land).
 ///
-/// Editor resolution order:
-///   1. `$EDITOR` env var, if set
-///   2. `nvim` as a reasonable fallback
+/// Editor resolution: `resolve_editor` — `$EDITOR` env var wins,
+/// otherwise the `editor_command_prefix` from config (default `nvim`).
 ///
 /// Path quoting: applied only when the path contains characters that
 /// would be re-interpreted by the shell (spaces, `$`, backticks, etc.).
 /// Single-quoted with embedded `'` escaped as `'\''` — standard POSIX.
-fn run_edit(m: &Match, source_pane: Option<u32>) -> DispatchResult {
+fn run_edit(m: &Match, source_pane: Option<u32>, editor_fallback: &str) -> DispatchResult {
     let Some(pane_id) = source_pane else {
         return DispatchResult::Rejected;
     };
     let file = m.fields.get("file").map(|s| s.as_str()).unwrap_or(&m.raw);
     let line = m.fields.get("line").map(|s| s.as_str()).unwrap_or("");
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
+    let editor = resolve_editor(editor_fallback);
     let cmd = if line.is_empty() {
         format!("{} {}", editor, shell_quote(file))
     } else {

@@ -743,7 +743,7 @@ impl State {
             Verb::Open | Verb::Reveal => {
                 for &i in &allowed {
                     if let Some(m) = self.matches.get(i).cloned() {
-                        action::dispatch(verb, &m, self.source_pane);
+                        action::dispatch(verb, &m, self.source_pane, &self.config.editor_command_prefix);
                     }
                 }
                 close_self();
@@ -754,7 +754,7 @@ impl State {
                     self.message = Some("edit: no source pane".into());
                     return true;
                 };
-                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".into());
+                let editor = action::resolve_editor(&self.config.editor_command_prefix);
                 let files: Vec<String> = allowed
                     .iter()
                     .filter_map(|&i| self.matches.get(i))
@@ -793,7 +793,7 @@ impl State {
             self.toggle_preview();
             return true;
         }
-        match action::dispatch(verb, m, self.source_pane) {
+        match action::dispatch(verb, m, self.source_pane, &self.config.editor_command_prefix) {
             DispatchResult::Closed => {
                 close_self();
                 false

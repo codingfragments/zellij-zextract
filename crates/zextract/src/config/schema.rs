@@ -65,6 +65,11 @@ impl Config {
                 "ui" => parse_ui_block(&node.children, &mut config.ui),
                 "grab" => parse_grab_block(&node.children, &mut config.grab),
                 "limits" => parse_limits_block(&node.children, &mut config.limits),
+                "editor_command_prefix" => {
+                    if let Some(s) = node.args.first().and_then(|v| v.as_string()) {
+                        config.editor_command_prefix = s.to_string();
+                    }
+                }
                 // Other sections wired in upcoming commits. Unknown
                 // names ignored for forward-compat.
                 _ => {}
@@ -582,6 +587,29 @@ mod tests {
         .unwrap();
         let config = Config::from_ast(&nodes);
         assert_eq!(config.grab.profiles[0].source, GrabSource::Scrollback);
+    }
+
+    // ---- editor_command_prefix (top-level scalar) ----
+
+    #[test]
+    fn editor_command_prefix_user_override() {
+        let nodes = parse::parse(r#"editor_command_prefix "code -g""#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.editor_command_prefix, "code -g");
+    }
+
+    #[test]
+    fn editor_command_prefix_omitted_keeps_default() {
+        let config = Config::from_ast(&[]);
+        assert_eq!(config.editor_command_prefix, "nvim");
+    }
+
+    #[test]
+    fn editor_command_prefix_non_string_keeps_default() {
+        // `editor_command_prefix 42` — integer where string expected.
+        let nodes = parse::parse(r#"editor_command_prefix 42"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.editor_command_prefix, "nvim");
     }
 
     // ---- limits block parsing ----
