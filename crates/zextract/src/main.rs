@@ -55,6 +55,9 @@ enum BannerKind {
     MissingConfig,
     /// Config file has a parse error. Shows line/col + message.
     ParseError(String),
+    /// Runtime warning (e.g. source pane disappeared). Yellow border,
+    /// no Ctrl-W offer, ^X dismisses.
+    Warning(String),
 }
 
 /// Written to `~/.config/zellij/zextract.kdl` when the user presses
@@ -322,15 +325,28 @@ impl ZellijPlugin for State {
             }
             Event::PaneUpdate(manifest) => {
                 let new_source = source_pane::pick(&manifest);
+                let was_some = self.source_pane.is_some();
                 let changed = new_source.is_some() && self.source_pane != new_source;
                 if changed {
                     self.source_pane = new_source;
+                    // Clear any "source pane gone" banner when it reappears.
+                    if matches!(self.banner, Some(BannerKind::Warning(_))) {
+                        self.banner = None;
+                    }
+                } else if was_some && new_source.is_none() {
+                    // Source pane disappeared — show a warning banner.
+                    // Insert/edit/open are rejected (no pane_id).
+                    // Copy and JSON still work.
+                    self.source_pane = None;
+                    self.banner = Some(BannerKind::Warning(
+                        "source pane closed — insert/open unavailable".into(),
+                    ));
                 }
                 if !self.extraction_done {
                     self.try_extract();
                     return true;
                 }
-                changed
+                changed || (was_some && new_source.is_none())
             }
             Event::Key(key) => self.handle_key(key),
             _ => false,
@@ -344,6 +360,16 @@ impl ZellijPlugin for State {
             width: cols as u16,
             height: rows as u16,
         };
+
+        if cols < 60 || rows < 15 {
+            let mut local_buf = Buffer::empty(area);
+            Paragraph::new("terminal too small (need ≥60×15)")
+                .style(Style::default().fg(Color::DarkGray))
+                .render(area, &mut local_buf);
+            render::flush(&local_buf);
+            self.render_buffer = Some(local_buf);
+            return;
+        }
 
         // Reuse the buffer across renders. Reallocate only when the
         // terminal size actually changes. `Buffer::reset` clears all
@@ -1253,12 +1279,17 @@ impl State {
 
     fn render_list(&mut self, area: Rect, buf: &mut Buffer) {
         if self.matches.is_empty() {
-            let msg = if self.extraction_done {
-                "No URLs in pane scrollback."
+            let (msg, hint) = if self.extraction_done {
+                ("No matches in pane scrollback.", Some("Try Alt-g to widen the grab depth"))
             } else {
-                "Extracting..."
+                ("Extracting…", None)
             };
-            Paragraph::new(msg)
+            let lines = if let Some(h) = hint {
+                vec![Line::from(msg), Line::from(Span::styled(h, Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)))]
+            } else {
+                vec![Line::from(msg)]
+            };
+            Paragraph::new(lines)
                 .style(Style::default().fg(Color::DarkGray))
                 .block(Block::default().borders(Borders::ALL))
                 .render(area, buf);
@@ -1300,7 +1331,13 @@ impl State {
                         Style::default().fg(type_color(m.ty)),
                     ),
                 ];
-                spans.extend(highlight_spans(&m.display, &s.indices));
+                // Reserve space: gutter(2) + tag+brackets+spaces(tag_len+4) + content.
+                // Truncate so the display fits in the list column.
+                let tag_overhead = m.effective_tag().chars().count() + 5; // [tag]  = tag+4 + gutter
+                let avail = (area.width as usize).saturating_sub(tag_overhead);
+                let use_middle = matches!(m.ty, MatchType::Url | MatchType::File | MatchType::Diagnostic);
+                let display = truncate_display(&m.display, avail, use_middle);
+                spans.extend(highlight_spans(&display, &s.indices));
                 ListItem::new(Line::from(spans))
             })
             .collect();
@@ -1548,6 +1585,23 @@ impl State {
                     Span::raw(":dismiss"),
                 ]),
             ),
+            Some(BannerKind::Warning(msg)) => (
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(
+                        "Warning",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!("  {msg}")),
+                ]),
+                Line::from(vec![
+                    Span::raw(" copy/json still available    "),
+                    Span::styled("^X", bold),
+                    Span::raw(":dismiss"),
+                ]),
+            ),
             None => (Line::from(""), Line::from("")),
         };
         Paragraph::new(vec![line1, line2])
@@ -1564,6 +1618,29 @@ impl State {
 /// rendered in a highlight style. Char-index based (matches nucleo's
 /// returned positions), so URLs (ASCII) and grapheme-simple Unicode
 /// both work correctly.
+/// Truncate `s` to fit in `max_chars` display columns.
+/// URL/file paths use middle-truncation (`…` in the centre) to preserve
+/// both the start (scheme/root) and the end (filename/line). Everything
+/// else uses end-truncation.
+fn truncate_display(s: &str, max_chars: usize, middle: bool) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max_chars {
+        return s.to_string();
+    }
+    if max_chars < 3 {
+        return "…".to_string();
+    }
+    if middle {
+        let half = (max_chars - 1) / 2;
+        let left: String = chars[..half].iter().collect();
+        let right: String = chars[chars.len() - (max_chars - 1 - half)..].iter().collect();
+        format!("{left}…{right}")
+    } else {
+        let truncated: String = chars[..max_chars - 1].iter().collect();
+        format!("{truncated}…")
+    }
+}
+
 fn highlight_spans(display: &str, indices: &[u32]) -> Vec<Span<'static>> {
     if indices.is_empty() {
         return vec![Span::raw(display.to_string())];
