@@ -94,7 +94,7 @@ impl FuzzyEngine {
             }
         }
 
-        results.sort_unstable_by(|a, b| b.score.cmp(&a.score));
+        results.sort_unstable_by_key(|b| std::cmp::Reverse(b.score));
         results
     }
 }

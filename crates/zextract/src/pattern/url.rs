@@ -37,7 +37,7 @@ pub fn extract(text: &str) -> Vec<Match> {
                 fields.insert("scheme".to_string(), raw[..scheme_end].to_string());
                 let after = &raw[scheme_end + 3..];
                 let host_end = after
-                    .find(|c: char| matches!(c, '/' | '?' | '#'))
+                    .find(['/', '?', '#'])
                     .unwrap_or(after.len());
                 fields.insert("host".to_string(), after[..host_end].to_string());
             }

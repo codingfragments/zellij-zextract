@@ -46,7 +46,7 @@ impl ZellijPlugin for State {
                 // in single-shell sessions.
                 let mut focused_non_plugin = None;
                 let mut first_non_plugin = None;
-                for (_tab, panes) in &manifest.panes {
+                for panes in manifest.panes.values() {
                     for pane in panes {
                         if pane.is_plugin {
                             continue;

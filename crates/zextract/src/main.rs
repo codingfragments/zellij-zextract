@@ -916,7 +916,7 @@ impl State {
                         }
                     })
                     .collect();
-                copy_to_clipboard(&pieces.join("\n"));
+                copy_to_clipboard(pieces.join("\n"));
                 close_self();
                 false
             }
@@ -1472,6 +1472,7 @@ impl State {
             .add_modifier(Modifier::UNDERLINED);
 
         let mut content: Vec<Line<'static>> = Vec::new();
+        #[allow(clippy::needless_range_loop)] // `i` used for match_line comparisons, not just indexing
         for i in start..=end {
             let is_match = i >= match_line && i <= match_line_end;
             let (line_style, marker, marker_style) = if is_match {
