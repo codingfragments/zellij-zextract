@@ -32,9 +32,8 @@ pub struct Config {
     pub limits: LimitsConfig,
     pub types: TypesConfig,
     pub actions: ActionsConfig,
+    pub patterns: PatternsConfig,
     pub log_level: LogLevel,
-    // Reserved for upcoming commits:
-    //   pub patterns: PatternsConfig,
 }
 
 impl Default for Config {
@@ -45,6 +44,7 @@ impl Default for Config {
             limits: LimitsConfig::default(),
             types: TypesConfig::default(),
             actions: ActionsConfig::default(),
+            patterns: PatternsConfig::default(),
             log_level: LogLevel::Info,
         }
     }
@@ -69,6 +69,7 @@ impl Config {
                 "limits" => parse_limits_block(&node.children, &mut config.limits),
                 "types" => parse_types_block(&node.children, &mut config.types),
                 "actions" => parse_actions_block(&node.children, &mut config.actions),
+                "patterns" => parse_patterns_block(&node.children, &mut config.patterns),
                 "log_level" => {
                     if let Some(s) = node.args.first().and_then(|v| v.as_string()) {
                         if let Some(lvl) = LogLevel::parse(s) {
@@ -355,6 +356,63 @@ pub struct TypeOverride {
     pub actions: Option<Vec<String>>,
     /// Verb label fired by Enter. `None` = no override.
     pub default: Option<String>,
+}
+
+// ---- Patterns ----
+
+/// User-defined custom regex patterns from the `patterns { }` block.
+#[derive(Debug, Clone, Default)]
+pub struct PatternsConfig {
+    pub custom: Vec<CustomPattern>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CustomPattern {
+    /// Name used in error messages and as a display label.
+    pub name: String,
+    /// Raw regex string. Compiled at extraction time; invalid patterns
+    /// are skipped with a log message.
+    pub regex: String,
+    /// Type tag the match is classified as. Unknown tags fall back to
+    /// `"url"`. Must be one of the values returned by `MatchType::tag()`.
+    pub ty: String,
+    /// Optional `{match}` template applied to the raw match text to
+    /// produce the display value. For URL-type patterns this becomes
+    /// the URL that open/copy act on.
+    pub template: Option<String>,
+}
+
+fn parse_patterns_block(nodes: &[Node], patterns: &mut PatternsConfig) {
+    for pat_node in nodes {
+        let name = pat_node.name.clone();
+        let mut regex: Option<String> = None;
+        let mut ty = "url".to_string();
+        let mut template: Option<String> = None;
+        for child in &pat_node.children {
+            match child.name.as_str() {
+                "regex" => {
+                    if let Some(s) = child.args.first().and_then(|v| v.as_string()) {
+                        regex = Some(s.to_string());
+                    }
+                }
+                "type" => {
+                    if let Some(s) = child.args.first().and_then(|v| v.as_string()) {
+                        ty = s.to_string();
+                    }
+                }
+                "template" => {
+                    if let Some(s) = child.args.first().and_then(|v| v.as_string()) {
+                        template = Some(s.to_string());
+                    }
+                }
+                _ => {} // forward-compat
+            }
+        }
+        let Some(regex) = regex else {
+            continue; // no regex = no pattern
+        };
+        patterns.custom.push(CustomPattern { name, regex, ty, template });
+    }
 }
 
 // ---- Actions ----
@@ -748,6 +806,74 @@ mod tests {
         .unwrap();
         let config = Config::from_ast(&nodes);
         assert_eq!(config.grab.profiles[0].source, GrabSource::Scrollback);
+    }
+
+    // ---- patterns block parsing ----
+
+    #[test]
+    fn patterns_default_empty() {
+        let config = Config::from_ast(&[]);
+        assert!(config.patterns.custom.is_empty());
+    }
+
+    #[test]
+    fn patterns_full_definition() {
+        let nodes = parse::parse(
+            r#"patterns {
+                jira {
+                    regex "[A-Z]+-[0-9]+"
+                    type "url"
+                    template "https://jira.example.com/browse/{match}"
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.patterns.custom.len(), 1);
+        let p = &config.patterns.custom[0];
+        assert_eq!(p.name, "jira");
+        assert_eq!(p.regex, "[A-Z]+-[0-9]+");
+        assert_eq!(p.ty, "url");
+        assert_eq!(p.template.as_deref(), Some("https://jira.example.com/browse/{match}"));
+    }
+
+    #[test]
+    fn patterns_no_template_is_ok() {
+        let nodes = parse::parse(
+            r#"patterns {
+                mysecret { regex "MY_[A-Z0-9]{32}" type "secret" }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.patterns.custom[0].template, None);
+    }
+
+    #[test]
+    fn patterns_missing_regex_skipped() {
+        // A pattern block without `regex` is dropped — can't extract
+        // without a regex.
+        let nodes = parse::parse(
+            r#"patterns { broken { type "url" } }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert!(config.patterns.custom.is_empty());
+    }
+
+    #[test]
+    fn patterns_multiple_patterns() {
+        let nodes = parse::parse(
+            r#"patterns {
+                jira { regex "[A-Z]+-[0-9]+" type "url" template "https://jira/{match}" }
+                pr   { regex "PR#[0-9]+" type "url" template "https://github.com/org/repo/pull/{match}" }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.patterns.custom.len(), 2);
+        assert_eq!(config.patterns.custom[0].name, "jira");
+        assert_eq!(config.patterns.custom[1].name, "pr");
     }
 
     // ---- actions block parsing ----

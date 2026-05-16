@@ -45,11 +45,12 @@ pub mod parse;
 pub mod schema;
 
 pub use schema::Config;
-pub use schema::{should_log, ActionsConfig, LogLevel, TypesConfig};
+pub use schema::{should_log, ActionsConfig, LogLevel, PatternsConfig, TypesConfig};
 // Re-exports kept available for upcoming commits that read these
 // values out of Config; `allow(unused_imports)` keeps the build
 // clean until those commits land.
 #[allow(unused_imports)]
 pub use schema::{
-    GrabProfile, GrabSource, LimitsConfig, PreviewDefault, TypeOverride, UiConfig, VerbTemplates,
+    CustomPattern, GrabProfile, GrabSource, LimitsConfig, PreviewDefault, TypeOverride, UiConfig,
+    VerbTemplates,
 };

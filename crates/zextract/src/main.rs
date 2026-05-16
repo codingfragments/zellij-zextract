@@ -226,10 +226,12 @@ impl ZellijPlugin for State {
                     new_path.display().to_string()
                 );
                 self.load_config_from_host();
-                // Whatever happened in load_config_from_host (success,
-                // read error, parse error), the load attempt is done —
-                // unblock the picker.
                 self.config_loaded = true;
+                // Re-extract with the loaded config so custom patterns and
+                // the configured grab profile take effect even on the first
+                // launch (first extraction ran against defaults).
+                self.extraction_done = false;
+                self.try_extract();
                 true
             }
             Event::FailedToChangeHostFolder(err) => {
@@ -465,7 +467,7 @@ impl State {
             trimmed.lines().count(),
             trimmed.len(),
         );
-        self.matches = extract::extract(&trimmed);
+        self.matches = extract::extract(&trimmed, &self.config.patterns);
         // Retain the source text for the preview pane.
         self.captured_text = trimmed;
         plog!(
