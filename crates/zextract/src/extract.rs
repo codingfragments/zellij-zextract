@@ -446,7 +446,7 @@ mod fixture_tests {
 
     #[test]
     fn multi_group_patterns_fixture() {
-        use crate::config::CustomPattern;
+        use crate::config::schema::CustomPattern;
         let text = include_str!("../tests/fixtures/multi_group_patterns.txt");
 
         let patterns = PatternsConfig {
@@ -535,7 +535,7 @@ mod fixture_tests {
 
     #[test]
     fn custom_patterns_fixture_port_and_jira() {
-        use crate::config::CustomPattern;
+        use crate::config::schema::CustomPattern;
         let text = include_str!("../tests/fixtures/custom_patterns.txt");
 
         let patterns = PatternsConfig {
@@ -604,7 +604,7 @@ mod tests {
     }
 
     fn patterns_with(name: &str, regex: &str, ty: &str, template: Option<&str>) -> PatternsConfig {
-        use crate::config::CustomPattern;
+        use crate::config::schema::CustomPattern;
         PatternsConfig {
             custom: vec![CustomPattern {
                 name: name.to_string(),

@@ -391,7 +391,7 @@ fn run_edit(m: &Match, source_pane: Option<u32>, template: Option<&str>) -> Disp
 /// POSIX-safe shell quoting. If `s` contains only chars that the shell
 /// won't reinterpret, returns it as-is; otherwise wraps it in single
 /// quotes (with embedded `'` escaped as `'\''`).
-#[allow(dead_code)] // used in multi-target edit and tests
+#[cfg(test)]
 pub(crate) fn shell_quote(s: &str) -> String {
     let is_safe = !s.is_empty()
         && s.chars().all(|c| {
@@ -429,9 +429,9 @@ fn run_reveal(m: &Match, template: Option<&str>) -> DispatchResult {
 /// match. Universal vars resolve to fields on the Match struct itself;
 /// per-type vars come from `m.fields`. Unknown names substitute the
 /// empty string (per planning.md Q20). Built now even though Phase 4
-/// has no custom-verb consumers — Phase 7's KDL `command "..."` will
-/// call this.
-#[allow(dead_code)]
+/// Template substitution without separator stripping. Used in tests;
+/// production code uses `substitute_opt`.
+#[cfg(test)]
 pub fn substitute(template: &str, m: &Match) -> String {
     let mut out = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
@@ -768,7 +768,7 @@ mod tests {
     // ---- types config override behavior ----
 
     fn types_with(tag: &str, actions: Option<Vec<&str>>, default: Option<&str>) -> TypesConfig {
-        use crate::config::TypeOverride;
+        use crate::config::schema::TypeOverride;
         let mut t = TypesConfig::default();
         t.overrides.insert(
             tag.to_string(),

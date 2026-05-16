@@ -254,21 +254,24 @@ file for that specific keybind launch.
 | `type` | space-separated type tags | Pre-fill query with `#tag` filters. |
 | `preview` | `"on"`, `"off"`, `"always"`, `"never"` | Force preview open or closed, ignoring `ui.preview`. |
 | `grab` | profile name string | Start on a specific grab profile, ignoring `grab.default_profile`. |
+| `popupTitle` | string | Override the floating pane title. Default: `"zextract"`. Note: Zellij's own `name` and `title` keys are consumed before they reach the plugin — use `popupTitle` instead. |
 
 **Example:**
 ```kdl
 bind "Alt u" {
     LaunchOrFocusPlugin "file://$HOME/.config/zellij/plugins/zextract.wasm" {
-        floating true;
-        type    "url";
-        preview "on";
+        floating   true;
+        type       "url";
+        preview    "on";
+        popupTitle "URL picker";
     };
 }
 bind "Alt j" {
     LaunchOrFocusPlugin "file://$HOME/.config/zellij/plugins/zextract.wasm" {
-        floating true;
-        type "jira";
-        grab "deep";
+        floating   true;
+        type       "jira";
+        grab       "deep";
+        popupTitle "JIRA";
     };
 }
 ```

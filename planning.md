@@ -807,6 +807,203 @@ reasoning before implementing v2 custom-pattern dedup.
 
 ---
 
+## v2 Design Decisions
+
+Written during Phase 11. Each item is either a **locked decision** (ready
+to implement in v2) or a **scoped idea** (direction agreed, detail to be
+refined when the work starts). All items are explicitly **v2 scope** —
+nothing here touches the v1 release.
+
+---
+
+### LOCKED — Custom pattern priority model
+
+**Decision: append-at-tail by default, opt-in `priority` list for power users.**
+
+Built-in patterns always win on overlap (url > diag > file > … per the
+existing `TYPE_PRIORITY` list). Custom patterns are appended at the end
+of the priority order — they only surface when no built-in claimed the
+same raw text. This is zero-config and predictable for the common case.
+
+Power users who need a custom pattern to outrank a built-in (e.g. a
+`jira` pattern that should win over `sha` when the ticket ID looks like
+a short hash) add an explicit `priority [jira url file …]` list to
+`zextract.kdl`. If `priority` is absent, the built-in order + append
+behaviour applies.
+
+```kdl
+// Optional — only needed when a custom pattern should beat a built-in.
+priority ["jira" "url" "file" "diag" "sha" "ipv4" "ipv6" "cmd" "secret" "quote"]
+```
+
+**Why not custom-always-wins:** Silently swallows built-in URL matches
+that happen to match a ticket pattern. Surprising for users who add a
+broad regex and lose their URL list.
+
+**Why not first-defined-wins:** Fragile when users reorder their config
+blocks. Not portable across machines.
+
+---
+
+### LOCKED — `{name?}` optional template substitution
+
+**Decision: keep `substitute_opt` stripping as the default; add `{name!}` for
+hard-fail.**
+
+The current heuristic (strip preceding `:` / `+` / space when a field
+is empty) works well in practice for the edit-command case and requires
+no syntax change. In v2, formalise it:
+
+- `{line}` — strip preceding separator if empty (current behaviour, unchanged)
+- `{line!}` — emit empty string and do NOT strip; caller sees `src/main.rs:` (rare)
+- `{line?}` — synonym for `{line}` (explicit opt-in for clarity in user configs)
+
+No change to `substitute_opt` internals — just document the semantics
+and add `?`/`!` suffix parsing to the substitution loop.
+
+---
+
+### LOCKED — Dynamic pane title reflecting active filter
+
+**Decision: update pane title when a type filter is active.**
+
+Extend the existing `rename_plugin_pane` call to reflect the active
+`#type` filter:
+
+- No filter → `zextract` (current behaviour)
+- `#url` active → `zextract — url`
+- `#url #jira` active → `zextract — url · jira`
+- `#!secret` active → `zextract — ¬secret`
+
+Call `rename_plugin_pane` in `refilter()` whenever `parsed_query`
+changes. Cost: one extra Zellij IPC per keystroke in Input mode — acceptable.
+
+---
+
+### LOCKED — Action failure feedback
+
+**Decision: surface `run_command` non-zero exit as a 3-second warning banner.**
+
+Currently `open` / `reveal` fire `run_command` and silently drop the
+result. In v2, subscribe to `Event::RunCommandResult` and check the exit
+code. On non-zero:
+
+```
+Warning  open failed (exit 127 — xdg-open not found)    ^X:dismiss
+```
+
+Use `BannerKind::Warning` (already exists). 3-second auto-dismiss via
+`set_timeout`. Zero exit → no banner.
+
+Note: `edit` inserts a command into the source pane rather than running
+it, so failure feedback doesn't apply — the user sees the inserted text
+and decides whether to run it.
+
+---
+
+### IDEA — Hint mode  *(v2, blocked on Zellij upstream)*
+
+In-place character labels overlaid next to each match in the source pane
+(à la `vimium`, `tmux-fingers`). Press a label sequence → action fires
+without opening the picker.
+
+**Blocked on:** Zellij exposing a shadow/decoration pane API or an
+`overlay_text` primitive. Watch upstream; design UX spec when the API
+lands. The extraction logic and match spans are already in place.
+
+**UX sketch:**
+- `Alt-h` → hint mode; labels appear over the scrollback
+- Type label chars → match selected; default action fires
+- `Esc` → cancel
+
+---
+
+### IDEA — File-content preview  *(v2)*
+
+Read the actual file with `std::fs::read` (via the `/host` preopen
+already granted) and render its content in the preview pane instead of
+just the scrollback context lines. Apply syntax highlighting via a
+lightweight ANSI highlighter (e.g. `syntect` with a small grammar set,
+or a regex-based fallback).
+
+**Design notes:**
+- Fallback gracefully when the file is not found (show scrollback context
+  with a "file not found" header, not an error).
+- Cap file read at 4 KB to avoid blowing the wasm memory budget.
+- Only activate for `file` and `diag` type matches; other types keep the
+  scrollback preview.
+- Scroll position (no scroll in v1): v2 should bind `Ctrl-U`/`Ctrl-D`
+  to scroll the preview independently of the list.
+
+---
+
+### IDEA — Multi-pane scrollback grab  *(v2)*
+
+Scrape all panes in the current window, merge and deduplicate. Show which
+pane a match came from.
+
+**Design notes:**
+- New `source "all-panes"` grab source in the profile schema.
+- Each `Match` gains an optional `pane_id: Option<u32>` field.
+- List row prefix: dim pane name/number when grabbing multiple panes.
+- Insert action targets the original source pane (not the match pane) —
+  behaviour unchanged.
+- Dedup: same raw text from different panes kept (pane-id is part of the
+  dedup key); same raw from the same pane deduped as today.
+
+---
+
+### IDEA — Tab-completion of `#type` tokens in Input mode  *(v2)*
+
+Completing `#ur` → `#url` inline as the user types, with a small
+completion popover or inline ghost text.
+
+**Design notes:**
+- Requires a small completion state machine separate from the main query
+  string (current: `#ur` stays in the fuzzy text until it resolves on
+  space).
+- On `Tab` when the cursor is inside a `#`-prefixed token: cycle through
+  unambiguous completions. On `Enter` or `Space`: commit the completion.
+- Never break backspace behaviour — backspacing into a committed `#url`
+  pill removes the whole token, not char-by-char.
+- Completion candidates: the current known-tag set (built-ins + loaded
+  custom pattern names).
+
+---
+
+### IDEA — Configurable built-in keymap  *(v2)*
+
+Expose a `keybinds { }` block in KDL that remaps List-mode single-letter
+verb keys.
+
+```kdl
+keybinds {
+    copy    "c"    // default: y
+    insert  "p"    // default: i
+    open    "o"    // default: o (unchanged)
+}
+```
+
+**Design constraints:**
+- Only remap the user-facing verb keys: `y Y i I o e r p J g Space`.
+- `Esc`, `Tab`, `Enter`, `Shift-Enter` are structural — never remappable.
+- Collision detection at load time: if two verbs map to the same key,
+  emit a parse-error banner and fall back to defaults.
+- Universal shortcuts (`Ctrl-P`, `Ctrl-Y`, `Alt-g`, etc.) are a separate
+  namespace and not configurable in v2.
+
+---
+
+### IDEA — Test coverage reporting  *(v2, CI)*
+
+Integrate `cargo-llvm-cov` and report per-module line coverage as a CI
+annotation on PRs. Set a minimum threshold (suggested: 70% line coverage
+on `src/pattern/` and `src/config/`) once snapshot tests are wired.
+
+Add `just coverage` to the justfile.
+
+---
+
 ## Appendix A — Default `zextract.kdl` (bootstrap-written)
 
 Generated as a string constant in the binary; written verbatim by `Ctrl-W`.
