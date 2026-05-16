@@ -42,3 +42,6 @@
 //! character at line:col" — the banner UI surfaces it directly.
 
 pub mod parse;
+pub mod schema;
+
+pub use schema::{Config, GrabProfile, GrabSource, LogLevel, PreviewDefault};
