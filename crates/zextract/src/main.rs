@@ -492,8 +492,16 @@ impl State {
     fn render_input(&self, area: Rect, buf: &mut Buffer) {
         let count_text = if self.matches.is_empty() && !self.extraction_done {
             "(extracting)".to_string()
-        } else {
+        } else if self.selected.is_empty() {
             format!("{}/{}", self.filtered.len(), self.matches.len())
+        } else {
+            // Selection always-visible in the count: e.g. "3 sel · 18/47"
+            format!(
+                "{} sel · {}/{}",
+                self.selected.len(),
+                self.filtered.len(),
+                self.matches.len(),
+            )
         };
         let (mode_tag, marker_style, query_style, cursor_glyph) = match self.mode {
             Mode::Input => (
