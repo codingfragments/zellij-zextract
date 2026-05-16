@@ -10,6 +10,7 @@ mod action;
 mod extract;
 mod fuzzy;
 mod pattern;
+mod query;
 mod render;
 mod source_pane;
 
@@ -26,6 +27,7 @@ use zellij_tile::prelude::*;
 use crate::action::{DispatchResult, Verb};
 use crate::extract::{Match, MatchType};
 use crate::fuzzy::{FuzzyEngine, ScoredMatch};
+use crate::query::ParsedQuery;
 
 /// Hardcoded grab cap for Phase 1+2. Becomes configurable in Phase 7.
 const RECENT_LINES: usize = 150;
@@ -47,6 +49,10 @@ struct State {
     /// for the default 150-line cap. Empty before first extraction.
     captured_text: String,
     query: String,
+    /// Result of running `query::parse_query` over `self.query` —
+    /// recomputed in `refilter` so the renderer can show active
+    /// filters as pills without re-parsing each frame.
+    parsed_query: ParsedQuery,
     fuzzy: FuzzyEngine,
     filtered: Vec<ScoredMatch>,
     list_state: ListState,
@@ -84,6 +90,7 @@ impl Default for State {
             matches: Vec::new(),
             captured_text: String::new(),
             query: String::new(),
+            parsed_query: ParsedQuery::default(),
             fuzzy: FuzzyEngine::new(),
             filtered: Vec::new(),
             list_state,
@@ -646,7 +653,6 @@ impl State {
     }
 
     fn refilter(&mut self) {
-        let displays: Vec<&str> = self.matches.iter().map(|m| m.display.as_str()).collect();
         // Remember the previously-selected match's index so we can preserve
         // selection across filter changes if it's still in the result set.
         let prev_selected_match_idx = self
@@ -655,13 +661,68 @@ impl State {
             .and_then(|i| self.filtered.get(i))
             .map(|s| s.index);
 
+        // Parse the query for `#type` filter tokens. Tag set comes from
+        // TYPE_PRIORITY — adding a custom type later is a one-line
+        // change at the call site (extend the slice). Cache the result
+        // so the renderer can show active filter pills without
+        // re-parsing every frame.
+        let tags: Vec<&str> = extract::TYPE_PRIORITY
+            .iter()
+            .map(|t| t.tag())
+            .collect();
+        self.parsed_query = query::parse_query(&self.query, &tags);
+        let parsed = &self.parsed_query;
+
+        // Pre-filter the match-index space by parsed includes/excludes.
+        // Empty `includes` = no inclusion constraint. Excludes apply on top.
+        // The fuzzy step then runs over only the surviving indices, with
+        // displays held in parallel.
+        let allowed_indices: Vec<usize> = self
+            .matches
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                let tag = m.ty.tag();
+                let include_ok = parsed.includes.is_empty()
+                    || parsed.includes.iter().any(|t| t == tag);
+                let exclude_ok = !parsed.excludes.iter().any(|t| t == tag);
+                include_ok && exclude_ok
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        let allowed_displays: Vec<&str> = allowed_indices
+            .iter()
+            .map(|&i| self.matches[i].display.as_str())
+            .collect();
+
         // Per-type score bonuses bias relative ranking when fuzzy scores
         // are close. Numbers are small so the primary signal is the
         // fuzzy match itself; bonuses only nudge ties.
         let matches = &self.matches;
-        self.filtered = self.fuzzy.filter_with_bonus(&self.query, &displays, |i| {
-            matches.get(i).map(|m| extract::type_priority_bonus(m.ty)).unwrap_or(0)
-        });
+        let alloc_idx_for_filter = &allowed_indices;
+        let scored = self
+            .fuzzy
+            .filter_with_bonus(&parsed.fuzzy, &allowed_displays, |i| {
+                alloc_idx_for_filter
+                    .get(i)
+                    .and_then(|&mi| matches.get(mi))
+                    .map(|m| extract::type_priority_bonus(m.ty))
+                    .unwrap_or(0)
+            });
+
+        // The fuzzy engine returns indices into `allowed_displays`;
+        // remap back to indices into `self.matches`.
+        self.filtered = scored
+            .into_iter()
+            .filter_map(|s| {
+                allowed_indices.get(s.index).map(|&mi| ScoredMatch {
+                    index: mi,
+                    score: s.score,
+                    indices: s.indices,
+                })
+            })
+            .collect();
 
         let new_selection = if let Some(prev) = prev_selected_match_idx {
             self.filtered.iter().position(|s| s.index == prev).unwrap_or(0)
@@ -703,7 +764,7 @@ impl State {
                 " ",
             ),
         };
-        let line = Line::from(vec![
+        let mut spans = vec![
             Span::styled("▍ ", marker_style),
             Span::styled(self.query.clone(), query_style),
             Span::styled(
@@ -711,14 +772,40 @@ impl State {
                 Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
             ),
             Span::raw("   "),
-            Span::styled(count_text, Style::default().fg(Color::DarkGray)),
-            Span::raw("   "),
-            Span::styled(
-                mode_tag,
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
-            ),
-        ]);
-        Paragraph::new(line)
+        ];
+
+        // Filter pills — one per active include/exclude. Each pill
+        // takes the type's color; excludes prefix with `-`.
+        for inc in &self.parsed_query.includes {
+            let color = type_color_for_tag(inc);
+            spans.push(Span::styled(
+                format!("[{inc}]"),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::raw(" "));
+        }
+        for exc in &self.parsed_query.excludes {
+            spans.push(Span::styled(
+                format!("[-{exc}]"),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            ));
+            spans.push(Span::raw(" "));
+        }
+        if !self.parsed_query.includes.is_empty()
+            || !self.parsed_query.excludes.is_empty()
+        {
+            spans.push(Span::raw(" "));
+        }
+
+        spans.push(Span::styled(count_text, Style::default().fg(Color::DarkGray)));
+        spans.push(Span::raw("   "));
+        spans.push(Span::styled(
+            mode_tag,
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+        ));
+        Paragraph::new(Line::from(spans))
             .block(Block::default().borders(Borders::ALL).title("zextract"))
             .render(area, buf);
     }
@@ -1000,6 +1087,19 @@ fn cap_for_verb(verb: Verb) -> usize {
 fn line_index_for_span(text: &str, byte_offset: usize) -> usize {
     let clamped = byte_offset.min(text.len());
     text[..clamped].bytes().filter(|&b| b == b'\n').count()
+}
+
+/// Resolve a tag-string back to its color. Used by pill rendering
+/// where we only have the tag name (the parser doesn't know about
+/// MatchType). Unknown tags fall back to gray — only happens if
+/// Phase 7's KDL custom-type names get a pill without a registered
+/// color, and we'll add user-color config in that phase.
+fn type_color_for_tag(tag: &str) -> Color {
+    extract::TYPE_PRIORITY
+        .iter()
+        .find(|t| t.tag() == tag)
+        .map(|&t| type_color(t))
+        .unwrap_or(Color::Gray)
 }
 
 fn type_color(ty: MatchType) -> Color {
