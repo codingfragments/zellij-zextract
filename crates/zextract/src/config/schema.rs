@@ -63,6 +63,7 @@ impl Config {
         for node in nodes {
             match node.name.as_str() {
                 "ui" => parse_ui_block(&node.children, &mut config.ui),
+                "grab" => parse_grab_block(&node.children, &mut config.grab),
                 // Other sections wired in upcoming commits. Unknown
                 // names ignored for forward-compat.
                 _ => {}
@@ -70,6 +71,75 @@ impl Config {
         }
         config
     }
+}
+
+/// Parse a `grab { default_profile "..." profiles { ... } }` block.
+/// Profiles **replace** the default set rather than merging — if the
+/// user defines `profiles { quick { ... } }` only `quick` exists.
+/// Lets users curate their own list without the four-default baggage.
+fn parse_grab_block(nodes: &[Node], grab: &mut GrabConfig) {
+    for node in nodes {
+        match node.name.as_str() {
+            "default_profile" => {
+                if let Some(s) = node.args.first().and_then(|v| v.as_string()) {
+                    grab.default_profile = s.to_string();
+                }
+            }
+            "profiles" => {
+                let mut profiles: Vec<GrabProfile> = Vec::new();
+                for profile_node in &node.children {
+                    if let Some(p) = parse_grab_profile(profile_node) {
+                        profiles.push(p);
+                    }
+                }
+                if !profiles.is_empty() {
+                    grab.profiles = profiles;
+                }
+            }
+            _ => {} // forward-compat
+        }
+    }
+    // Ensure default_profile points at an existing profile. If the user
+    // misspelled it (or removed the named profile), fall back to the
+    // first profile in the list so Ctrl-g cycling still works.
+    if !grab.profiles.iter().any(|p| p.name == grab.default_profile) {
+        if let Some(first) = grab.profiles.first() {
+            grab.default_profile = first.name.clone();
+        }
+    }
+}
+
+fn parse_grab_profile(node: &Node) -> Option<GrabProfile> {
+    let mut source = GrabSource::Scrollback;
+    let mut lines: Option<u32> = None;
+    for child in &node.children {
+        match child.name.as_str() {
+            "source" => {
+                if let Some(s) = child.args.first().and_then(|v| v.as_string()) {
+                    source = match s {
+                        "scrollback" => GrabSource::Scrollback,
+                        "viewport" => GrabSource::Viewport,
+                        _ => source, // keep default on unknown
+                    };
+                }
+            }
+            "lines" => {
+                if let Some(n) = child.args.first().and_then(|v| v.as_int()) {
+                    if n > 0 {
+                        lines = Some(n as u32);
+                    } else {
+                        lines = None; // 0 or negative ⇒ unbounded
+                    }
+                }
+            }
+            _ => {} // forward-compat
+        }
+    }
+    Some(GrabProfile {
+        name: node.name.clone(),
+        source,
+        lines,
+    })
 }
 
 fn parse_ui_block(nodes: &[Node], ui: &mut UiConfig) {
@@ -359,5 +429,142 @@ mod tests {
         let nodes = parse::parse(r#"ui { mask_secrets "yes" }"#).unwrap();
         let config = Config::from_ast(&nodes);
         assert!(!config.ui.mask_secrets); // default
+    }
+
+    // ---- grab block parsing ----
+
+    #[test]
+    fn grab_default_block_omitted_keeps_defaults() {
+        let config = Config::from_ast(&[]);
+        let names: Vec<&str> = config.grab.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["quick", "deep", "viewport", "full"]);
+        assert_eq!(config.grab.default_profile, "quick");
+    }
+
+    #[test]
+    fn grab_user_profiles_replace_defaults() {
+        let nodes = parse::parse(
+            r#"grab {
+                default_profile "tiny"
+                profiles {
+                    tiny {
+                        source "scrollback"
+                        lines 50
+                    }
+                    huge {
+                        source "scrollback"
+                        lines 10000
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        let names: Vec<&str> = config.grab.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["tiny", "huge"]);
+        assert_eq!(config.grab.default_profile, "tiny");
+        assert_eq!(config.grab.profiles[0].lines, Some(50));
+        assert_eq!(config.grab.profiles[1].lines, Some(10000));
+    }
+
+    #[test]
+    fn grab_viewport_profile_no_lines() {
+        let nodes = parse::parse(
+            r#"grab {
+                profiles {
+                    viewport { source "viewport" }
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        let vp = config.grab.profiles.iter().find(|p| p.name == "viewport").unwrap();
+        assert_eq!(vp.source, GrabSource::Viewport);
+        assert_eq!(vp.lines, None);
+    }
+
+    #[test]
+    fn grab_full_profile_unbounded() {
+        // `lines` omitted entirely → None (unbounded).
+        let nodes = parse::parse(
+            r#"grab {
+                profiles {
+                    full { source "scrollback" }
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.grab.profiles[0].lines, None);
+    }
+
+    #[test]
+    fn grab_lines_zero_means_unbounded() {
+        let nodes = parse::parse(
+            r#"grab {
+                profiles {
+                    everything {
+                        source "scrollback"
+                        lines 0
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.grab.profiles[0].lines, None);
+    }
+
+    #[test]
+    fn grab_default_profile_misspelled_falls_back_to_first() {
+        // User wrote `default_profile "qiuck"` (typo). We don't error;
+        // we silently fall back to the first defined profile so
+        // Ctrl-g cycling still has somewhere to start.
+        let nodes = parse::parse(
+            r#"grab {
+                default_profile "qiuck"
+                profiles {
+                    quick {
+                        source "scrollback"
+                        lines 150
+                    }
+                    deep {
+                        source "scrollback"
+                        lines 1500
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.grab.default_profile, "quick");
+    }
+
+    #[test]
+    fn grab_unknown_source_keeps_scrollback_default() {
+        let nodes = parse::parse(
+            r#"grab {
+                profiles {
+                    weird {
+                        source "nonsense"
+                        lines 100
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.grab.profiles[0].source, GrabSource::Scrollback);
+    }
+
+    #[test]
+    fn grab_only_default_profile_set_keeps_default_profiles() {
+        // Setting only `default_profile "deep"` doesn't blow away the
+        // four default profiles — we only replace when `profiles { }`
+        // is itself present.
+        let nodes = parse::parse(r#"grab { default_profile "deep" }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.grab.default_profile, "deep");
+        assert_eq!(config.grab.profiles.len(), 4); // defaults preserved
     }
 }
