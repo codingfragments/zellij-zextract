@@ -262,6 +262,16 @@ impl State {
             BareKey::Char('y') if only_ctrl => {
                 return self.fire_verb(Verb::CopyRaw);
             }
+            // Ctrl-a → select every match currently visible (post-filter).
+            BareKey::Char('a') if only_ctrl => {
+                self.select_all_visible();
+                return true;
+            }
+            // Ctrl-d → clear the entire selection.
+            BareKey::Char('d') if only_ctrl => {
+                self.deselect_all();
+                return true;
+            }
             _ => {}
         }
         // Mode-specific routing.
@@ -713,6 +723,10 @@ impl State {
                 Span::raw(":preview  "),
                 Span::styled("⇧⏎", bold),
                 Span::raw(":insert  "),
+                Span::styled("^A", bold),
+                Span::raw(":select-all  "),
+                Span::styled("^D", bold),
+                Span::raw(":clear-sel  "),
             ]);
         }
         line2.push(Span::styled("Esc", bold));
