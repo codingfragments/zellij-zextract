@@ -306,6 +306,13 @@ impl State {
     }
 
     fn handle_key_list_mode(&mut self, key: KeyWithModifier) -> bool {
+        // Space toggles selection on the current row. Lives here (not
+        // the universal handler) because Space in Input mode is part of
+        // the query.
+        if matches!(key.bare_key, BareKey::Char(' ')) && key.has_no_modifiers() {
+            self.toggle_select_current();
+            return true;
+        }
         match key.bare_key {
             BareKey::Char(c) => {
                 // Letter keys are action verbs. Non-shift modifiers
@@ -539,7 +546,23 @@ impl State {
             .iter()
             .filter_map(|s| self.matches.get(s.index).map(|m| (s, m)))
             .map(|(s, m)| {
+                // Leftmost gutter: `● ` for selected rows, `  ` otherwise.
+                // The `▸ ` cursor marker comes from highlight_symbol and
+                // sits BETWEEN this gutter and the type tag — both visual
+                // signals coexist.
+                let selected = self.selected.contains(&s.index);
+                let gutter = if selected {
+                    Span::styled(
+                        "● ",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Span::raw("  ")
+                };
                 let mut spans = vec![
+                    gutter,
                     Span::styled(
                         format!("[{}]  ", m.ty.tag()),
                         Style::default().fg(type_color(m.ty)),
