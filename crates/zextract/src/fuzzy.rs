@@ -60,8 +60,7 @@ impl FuzzyEngine {
         }
 
         // Smart-case: any uppercase in query → respect case.
-        self.matcher.config.ignore_case =
-            !query.chars().any(|c| c.is_ascii_uppercase());
+        self.matcher.config.ignore_case = !query.chars().any(|c| c.is_ascii_uppercase());
 
         // Build needle once. Use Utf32Str variants directly so we don't
         // entangle borrows with `self.matcher` inside the loop.
@@ -110,14 +109,21 @@ mod tests {
         let items = ["alpha", "beta", "gamma"];
         let result = fz.filter("", &items);
         assert_eq!(result.len(), 3);
-        assert_eq!(result.iter().map(|r| r.index).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(
+            result.iter().map(|r| r.index).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
         assert!(result.iter().all(|r| r.indices.is_empty()));
     }
 
     #[test]
     fn narrows_to_matching_items() {
         let mut fz = FuzzyEngine::new();
-        let items = ["https://example.com", "ftp://archive.org", "https://docs.rs"];
+        let items = [
+            "https://example.com",
+            "ftp://archive.org",
+            "https://docs.rs",
+        ];
         let result = fz.filter("docs", &items);
         let indices: Vec<usize> = result.iter().map(|r| r.index).collect();
         assert!(indices.contains(&2));

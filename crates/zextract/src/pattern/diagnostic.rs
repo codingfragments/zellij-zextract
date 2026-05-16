@@ -26,8 +26,7 @@ fn colon_form_regex() -> &'static Regex {
 fn python_traceback_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"File "([^"]+)", line (\d+)"#)
-            .expect("python traceback regex compiles")
+        Regex::new(r#"File "([^"]+)", line (\d+)"#).expect("python traceback regex compiles")
     })
 }
 
@@ -105,7 +104,8 @@ fn push_match(
         raw: raw.clone(),
         display: raw,
         context: context.to_string(),
-        label: None, span: (span_start, span_end),
+        label: None,
+        span: (span_start, span_end),
         fields,
     });
 }

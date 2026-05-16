@@ -29,16 +29,28 @@ fn formats() -> &'static [FormatPattern] {
     static FORMATS: OnceLock<Vec<FormatPattern>> = OnceLock::new();
     FORMATS.get_or_init(|| {
         let raws = [
-            ("jwt",       r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
-            ("aws",       r"\bA(?:KIA|SIA)[0-9A-Z]{16}\b"),
-            ("github",    r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"),
+            (
+                "jwt",
+                r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+            ),
+            ("aws", r"\bA(?:KIA|SIA)[0-9A-Z]{16}\b"),
+            ("github", r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"),
             ("github_pat", r"\bgithub_pat_[A-Za-z0-9_]{82}\b"),
-            ("gitlab",    r"\bg(?:lpat|loas|lptt|lrt|lsoat|lagent)-[A-Za-z0-9_-]{20,}\b"),
-            ("stripe",    r"\b(?:sk_live|sk_test|pk_live|pk_test|rk_live|whsec)_[A-Za-z0-9]{24,}\b"),
-            ("openai",    r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
-            ("anthropic", r"\bsk-ant-(?:api|admin)\d{2}-[A-Za-z0-9_-]{20,}\b"),
-            ("slack",     r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
-            ("bearer",    r"Bearer\s+[A-Za-z0-9_\-\.~+/]+={0,2}"),
+            (
+                "gitlab",
+                r"\bg(?:lpat|loas|lptt|lrt|lsoat|lagent)-[A-Za-z0-9_-]{20,}\b",
+            ),
+            (
+                "stripe",
+                r"\b(?:sk_live|sk_test|pk_live|pk_test|rk_live|whsec)_[A-Za-z0-9]{24,}\b",
+            ),
+            ("openai", r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
+            (
+                "anthropic",
+                r"\bsk-ant-(?:api|admin)\d{2}-[A-Za-z0-9_-]{20,}\b",
+            ),
+            ("slack", r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
+            ("bearer", r"Bearer\s+[A-Za-z0-9_\-\.~+/]+={0,2}"),
         ];
         raws.iter()
             .map(|(name, p)| FormatPattern {
@@ -105,7 +117,8 @@ fn push(
         raw: raw.to_string(),
         display: raw.to_string(),
         context: context.to_string(),
-        label: None, span: (span_start, span_end),
+        label: None,
+        span: (span_start, span_end),
         fields,
     });
 }
@@ -191,7 +204,8 @@ mod tests {
 
     #[test]
     fn detects_jwt() {
-        let token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+        let token =
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
         let m = extract(&format!("Authorization: {}", token));
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].fields["secret_format"], "jwt");
@@ -252,7 +266,8 @@ mod tests {
     fn specific_match_suppresses_entropy_fallback() {
         // A JWT also passes the entropy filter. Curated match takes
         // precedence — exactly one match emitted, with format=jwt.
-        let token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+        let token =
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
         let m = extract(token);
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].fields["secret_format"], "jwt");

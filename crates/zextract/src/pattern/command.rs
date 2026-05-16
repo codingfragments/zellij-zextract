@@ -27,36 +27,103 @@ const PROMPT_MARKERS: &[&str] = &["❯ ", "$ ", "> ", "% ", "# "];
 /// matter — we collapse to leftmost-longest in code.
 const TRIGGERS: &[&str] = &[
     // Install / package managers
-    "sudo", "apt", "apt-get", "yum", "dnf", "pacman", "brew", "snap",
-    "pip", "pip3", "pipx", "gem", "cargo", "go", "npm", "yarn", "pnpm",
-    "bun", "uv", "poetry", "conda", "mamba",
+    "sudo",
+    "apt",
+    "apt-get",
+    "yum",
+    "dnf",
+    "pacman",
+    "brew",
+    "snap",
+    "pip",
+    "pip3",
+    "pipx",
+    "gem",
+    "cargo",
+    "go",
+    "npm",
+    "yarn",
+    "pnpm",
+    "bun",
+    "uv",
+    "poetry",
+    "conda",
+    "mamba",
     // Fetch
-    "curl", "wget", "fetch",
+    "curl",
+    "wget",
+    "fetch",
     // Shell exec
-    "sh", "bash", "zsh", "fish", "/bin/sh", "/bin/bash",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "/bin/sh",
+    "/bin/bash",
     // Build
-    "make", "cmake", "ninja", "just", "nix", "nix-shell", "nix-build",
+    "make",
+    "cmake",
+    "ninja",
+    "just",
+    "nix",
+    "nix-shell",
+    "nix-build",
     // Editor / pager / IO
-    "nvim", "vim", "nano", "emacs", "less", "more", "cat", "tee",
-    "xargs", "awk", "sed", "grep", "find",
+    "nvim",
+    "vim",
+    "nano",
+    "emacs",
+    "less",
+    "more",
+    "cat",
+    "tee",
+    "xargs",
+    "awk",
+    "sed",
+    "grep",
+    "find",
     // VCS
-    "git", "hg", "svn",
+    "git",
+    "hg",
+    "svn",
     // Containers / orchestration
-    "docker", "podman", "kubectl", "helm",
+    "docker",
+    "podman",
+    "kubectl",
+    "helm",
     // Language runners
-    "python", "python3", "node", "deno", "ruby", "rustc", "java", "mvn", "gradle",
+    "python",
+    "python3",
+    "node",
+    "deno",
+    "ruby",
+    "rustc",
+    "java",
+    "mvn",
+    "gradle",
     // File ops
-    "tar", "gunzip", "unzip", "chmod", "chown", "ln", "mkdir", "rm", "cp", "mv",
-    "ssh", "scp", "rsync",
+    "tar",
+    "gunzip",
+    "unzip",
+    "chmod",
+    "chown",
+    "ln",
+    "mkdir",
+    "rm",
+    "cp",
+    "mv",
+    "ssh",
+    "scp",
+    "rsync",
 ];
 
 /// Patterns we strip from the start of a continuation line during
 /// splicing. Order: most specific first.
 const CONTINUATION_STRIP: &[&str] = &[
-    r"^\s*\d+[:\.]?\s+",  // line numbers ("  42  ", "2: ", "2. ")
-    r"^[+\-]\s+",          // diff add/remove markers
-    r"^[#>|]\s+",          // comment / quote / table-cell markers
-    r"^\s+",               // leading whitespace (catchall)
+    r"^\s*\d+[:\.]?\s+", // line numbers ("  42  ", "2: ", "2. ")
+    r"^[+\-]\s+",        // diff add/remove markers
+    r"^[#>|]\s+",        // comment / quote / table-cell markers
+    r"^\s+",             // leading whitespace (catchall)
 ];
 
 fn trigger_regex() -> &'static Regex {
@@ -194,8 +261,8 @@ fn ok_command_preceding_byte(b: Option<u8>) -> bool {
         // Shell separators / operators + prose punctuation that can
         // precede a command word.
         Some(
-            b'|' | b';' | b'&' | b'(' | b'[' | b'{' | b'`' | b'$' | b'='
-            | b'>' | b'<' | b'"' | b'\'' | b':' | b','
+            b'|' | b';' | b'&' | b'(' | b'[' | b'{' | b'`' | b'$' | b'=' | b'>' | b'<' | b'"'
+            | b'\'' | b':' | b',',
         ) => true,
         // `.` and `/` are explicitly rejected — they signal file-extension
         // (`install.sh`) or path-component (`/usr/bin/sh`) context, not a
@@ -207,7 +274,11 @@ fn ok_command_preceding_byte(b: Option<u8>) -> bool {
 /// Splice a prompt-anchored command's continuations. Returns
 /// `(full_command_text, full_context, lines_consumed)`. `lines_consumed`
 /// is at least 1 (the starting line itself).
-fn splice_continuation(lines: &[&str], start_idx: usize, first_cmd: &str) -> (String, String, usize) {
+fn splice_continuation(
+    lines: &[&str],
+    start_idx: usize,
+    first_cmd: &str,
+) -> (String, String, usize) {
     let mut cmd = first_cmd.to_string();
     let mut context = lines[start_idx].to_string();
     let mut consumed = 1usize;
@@ -259,7 +330,8 @@ fn make_match(raw: String, context: String, span_start: usize, span_end: usize) 
         raw: raw.clone(),
         display: raw,
         context,
-        label: None, span: (span_start, span_end),
+        label: None,
+        span: (span_start, span_end),
         fields,
     }
 }
@@ -304,7 +376,10 @@ mod tests {
         let m = extract(text);
         assert_eq!(m.len(), 1);
         // The trailing backslash and leading whitespace on line 2 are stripped.
-        assert_eq!(m[0].raw, "curl -fsSL https://example.com/install.sh | sudo bash");
+        assert_eq!(
+            m[0].raw,
+            "curl -fsSL https://example.com/install.sh | sudo bash"
+        );
     }
 
     #[test]
@@ -312,14 +387,20 @@ mod tests {
         let text = "$ curl -fsSL https://example.com/install.sh \\\n2:  | sudo bash";
         let m = extract(text);
         assert_eq!(m.len(), 1);
-        assert_eq!(m[0].raw, "curl -fsSL https://example.com/install.sh | sudo bash");
+        assert_eq!(
+            m[0].raw,
+            "curl -fsSL https://example.com/install.sh | sudo bash"
+        );
     }
 
     #[test]
     fn continuation_strips_diff_marker() {
         let text = "$ curl -fsSL https://example.com/install.sh \\\n+   | sudo bash";
         let m = extract(text);
-        assert_eq!(m[0].raw, "curl -fsSL https://example.com/install.sh | sudo bash");
+        assert_eq!(
+            m[0].raw,
+            "curl -fsSL https://example.com/install.sh | sudo bash"
+        );
     }
 
     #[test]

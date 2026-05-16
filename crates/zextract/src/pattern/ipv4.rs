@@ -41,16 +41,14 @@ pub fn extract(text: &str) -> Vec<Match> {
             let span_end = span_start + raw.len();
             let mut fields = HashMap::new();
             fields.insert("ip".to_string(), ip_str.to_string());
-            fields.insert(
-                "port".to_string(),
-                port_str.unwrap_or("").to_string(),
-            );
+            fields.insert("port".to_string(), port_str.unwrap_or("").to_string());
             out.push(Match {
                 ty: MatchType::Ipv4,
                 raw: raw.clone(),
                 display: raw,
                 context: line.to_string(),
-                label: None, span: (span_start, span_end),
+                label: None,
+                span: (span_start, span_end),
                 fields,
             });
         }

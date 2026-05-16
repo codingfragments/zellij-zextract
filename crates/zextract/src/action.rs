@@ -142,7 +142,10 @@ pub fn allowed_verbs(m: &Match, types: &TypesConfig) -> Vec<Verb> {
             // Empty user list = "no actions" — honor it. Unknown labels
             // get filtered out; the user can fix their config without
             // breaking the plugin.
-            return action_strs.iter().filter_map(|s| verb_from_label(s)).collect();
+            return action_strs
+                .iter()
+                .filter_map(|s| verb_from_label(s))
+                .collect();
         }
     }
     static_allowed_verbs(m.ty).to_vec()
@@ -193,9 +196,7 @@ pub fn is_verb_allowed(m: &Match, verb: Verb, types: &TypesConfig) -> bool {
     if matches!(verb, Verb::CopyRaw | Verb::Json) {
         return true;
     }
-    if matches!(m.ty, MatchType::Secret)
-        && matches!(verb, Verb::Open | Verb::Edit | Verb::Reveal)
-    {
+    if matches!(m.ty, MatchType::Secret) && matches!(verb, Verb::Open | Verb::Edit | Verb::Reveal) {
         return false;
     }
     allowed_verbs(m, types).contains(&verb)
@@ -220,7 +221,9 @@ pub fn dispatch(
     }
     // Look up per-type override first, then fall back to "default".
     let tag = m.ty.tag();
-    let verb_templates = actions.overrides.get(tag)
+    let verb_templates = actions
+        .overrides
+        .get(tag)
         .or_else(|| actions.overrides.get("default"));
     match verb {
         Verb::CopyRaw => {
@@ -253,7 +256,6 @@ pub fn dispatch(
         }
     }
 }
-
 
 /// Serialize a slice of Match references to a compact, single-line
 /// JSON array. Always returns an array (even for one element) per
@@ -340,11 +342,9 @@ fn run_open(m: &Match, template: Option<&str>) -> DispatchResult {
     let url_target;
     let target: &str = match m.ty {
         MatchType::Url => &m.raw,
-        MatchType::File | MatchType::Diagnostic => m
-            .fields
-            .get("file")
-            .map(|s| s.as_str())
-            .unwrap_or(&m.raw),
+        MatchType::File | MatchType::Diagnostic => {
+            m.fields.get("file").map(|s| s.as_str()).unwrap_or(&m.raw)
+        }
         _ => {
             url_target = m.raw.clone();
             &url_target
@@ -503,11 +503,16 @@ pub fn substitute_opt(template: &str, m: &Match) -> String {
         let mut name = String::new();
         let mut closed = false;
         for nc in chars.by_ref() {
-            if nc == '}' { closed = true; break; }
+            if nc == '}' {
+                closed = true;
+                break;
+            }
             name.push(nc);
         }
         if !closed {
-            out.push('{'); out.push_str(&name); continue;
+            out.push('{');
+            out.push_str(&name);
+            continue;
         }
         let value = match name.as_str() {
             "match" | "raw" => m.raw.clone(),
@@ -521,7 +526,12 @@ pub fn substitute_opt(template: &str, m: &Match) -> String {
             _ => m.fields.get(&name).cloned().unwrap_or_default(),
         };
         if value.is_empty() {
-            while out.chars().last().map(|c| SEP.contains(&c)).unwrap_or(false) {
+            while out
+                .chars()
+                .last()
+                .map(|c| SEP.contains(&c))
+                .unwrap_or(false)
+            {
                 out.pop();
             }
         } else {
@@ -552,7 +562,8 @@ mod tests {
             raw: "https://example.com".to_string(),
             display: "https://example.com".to_string(),
             context: "see https://example.com here".to_string(),
-            label: None, span: (4, 23),
+            label: None,
+            span: (4, 23),
             fields,
         }
     }
@@ -567,7 +578,8 @@ mod tests {
             raw: "src/main.rs:42:8".to_string(),
             display: "src/main.rs:42:8".to_string(),
             context: "error at src/main.rs:42:8".to_string(),
-            label: None, span: (9, 25),
+            label: None,
+            span: (9, 25),
             fields,
         }
     }
@@ -581,7 +593,8 @@ mod tests {
             raw: "ghp_abc".to_string(),
             display: "ghp_abc".to_string(),
             context: String::new(),
-            label: None, span: (0, 7),
+            label: None,
+            span: (0, 7),
             fields,
         }
     }
@@ -592,7 +605,8 @@ mod tests {
             raw: String::new(),
             display: String::new(),
             context: String::new(),
-            label: None, span: (0, 0),
+            label: None,
+            span: (0, 0),
             fields: HashMap::new(),
         }
     }
@@ -603,12 +617,20 @@ mod tests {
         assert_eq!(default_verb(&empty_match(MatchType::Url), &t), Verb::Open);
         // Diagnostic jumps straight to its captured line — that's the
         // thing that distinguishes it from a plain file path.
-        assert_eq!(default_verb(&empty_match(MatchType::Diagnostic), &t), Verb::Edit);
+        assert_eq!(
+            default_verb(&empty_match(MatchType::Diagnostic), &t),
+            Verb::Edit
+        );
         // Everything else: insert at the prompt.
         for ty in [
-            MatchType::File, MatchType::Command,
-            MatchType::Sha, MatchType::Ipv4, MatchType::Ipv6, MatchType::Uuid,
-            MatchType::QuotedString, MatchType::Secret,
+            MatchType::File,
+            MatchType::Command,
+            MatchType::Sha,
+            MatchType::Ipv4,
+            MatchType::Ipv6,
+            MatchType::Uuid,
+            MatchType::QuotedString,
+            MatchType::Secret,
         ] {
             assert_eq!(default_verb(&empty_match(ty), &t), Verb::Insert, "{ty:?}");
         }
@@ -618,9 +640,15 @@ mod tests {
     fn copy_always_allowed() {
         let t = td();
         for ty in [
-            MatchType::Url, MatchType::File, MatchType::Diagnostic,
-            MatchType::Sha, MatchType::Ipv4, MatchType::Ipv6,
-            MatchType::Uuid, MatchType::QuotedString, MatchType::Command,
+            MatchType::Url,
+            MatchType::File,
+            MatchType::Diagnostic,
+            MatchType::Sha,
+            MatchType::Ipv4,
+            MatchType::Ipv6,
+            MatchType::Uuid,
+            MatchType::QuotedString,
+            MatchType::Command,
             MatchType::Secret,
         ] {
             assert!(is_verb_allowed(&empty_match(ty), Verb::CopyRaw, &t));
@@ -662,20 +690,43 @@ mod tests {
     #[test]
     fn url_does_not_allow_reveal() {
         let t = td();
-        assert!(!is_verb_allowed(&empty_match(MatchType::Url), Verb::Reveal, &t));
+        assert!(!is_verb_allowed(
+            &empty_match(MatchType::Url),
+            Verb::Reveal,
+            &t
+        ));
     }
 
     #[test]
     fn display_variants_only_on_quoted_string_for_now() {
         let t = td();
-        assert!(is_verb_allowed(&empty_match(MatchType::QuotedString), Verb::CopyDisplay, &t));
-        assert!(is_verb_allowed(&empty_match(MatchType::QuotedString), Verb::InsertDisplay, &t));
+        assert!(is_verb_allowed(
+            &empty_match(MatchType::QuotedString),
+            Verb::CopyDisplay,
+            &t
+        ));
+        assert!(is_verb_allowed(
+            &empty_match(MatchType::QuotedString),
+            Verb::InsertDisplay,
+            &t
+        ));
         for ty in [
-            MatchType::Url, MatchType::Sha, MatchType::Ipv4, MatchType::Ipv6,
-            MatchType::Uuid, MatchType::Command, MatchType::Secret,
+            MatchType::Url,
+            MatchType::Sha,
+            MatchType::Ipv4,
+            MatchType::Ipv6,
+            MatchType::Uuid,
+            MatchType::Command,
+            MatchType::Secret,
         ] {
-            assert!(!is_verb_allowed(&empty_match(ty), Verb::CopyDisplay, &t), "{ty:?}");
-            assert!(!is_verb_allowed(&empty_match(ty), Verb::InsertDisplay, &t), "{ty:?}");
+            assert!(
+                !is_verb_allowed(&empty_match(ty), Verb::CopyDisplay, &t),
+                "{ty:?}"
+            );
+            assert!(
+                !is_verb_allowed(&empty_match(ty), Verb::InsertDisplay, &t),
+                "{ty:?}"
+            );
         }
     }
 
@@ -699,9 +750,15 @@ mod tests {
         // not "don't expose value at all").
         let t = td();
         for ty in [
-            MatchType::Url, MatchType::File, MatchType::Diagnostic,
-            MatchType::Sha, MatchType::Ipv4, MatchType::Ipv6,
-            MatchType::Uuid, MatchType::QuotedString, MatchType::Command,
+            MatchType::Url,
+            MatchType::File,
+            MatchType::Diagnostic,
+            MatchType::Sha,
+            MatchType::Ipv4,
+            MatchType::Ipv6,
+            MatchType::Uuid,
+            MatchType::QuotedString,
+            MatchType::Command,
             MatchType::Secret,
         ] {
             assert!(is_verb_allowed(&empty_match(ty), Verb::Json, &t), "{ty:?}");
@@ -748,11 +805,7 @@ mod tests {
         // User: actions = ["copy", "insert"] but default = "open".
         // "open" isn't in their allow-list, so default falls back to
         // the static default (Insert for File).
-        let t = types_with(
-            "file",
-            Some(vec!["copy", "insert"]),
-            Some("open"),
-        );
+        let t = types_with("file", Some(vec!["copy", "insert"]), Some("open"));
         let m = empty_match(MatchType::File);
         assert_eq!(default_verb(&m, &t), Verb::Insert); // static fallback
     }
@@ -790,8 +843,8 @@ mod tests {
         let t = types_with("url", Some(vec![]), None);
         let m = empty_match(MatchType::Url);
         assert!(is_verb_allowed(&m, Verb::CopyRaw, &t)); // universal
-        assert!(is_verb_allowed(&m, Verb::Json, &t));    // universal
-        assert!(!is_verb_allowed(&m, Verb::Open, &t));   // blocked
+        assert!(is_verb_allowed(&m, Verb::Json, &t)); // universal
+        assert!(!is_verb_allowed(&m, Verb::Open, &t)); // blocked
         assert!(!is_verb_allowed(&m, Verb::Insert, &t)); // blocked
     }
 
@@ -811,7 +864,7 @@ mod tests {
         let t = types_with("url", Some(vec!["open"]), None);
         // Override for url doesn't touch file.
         let m = empty_match(MatchType::File);
-        assert!(is_verb_allowed(&m, Verb::Edit, &t));   // static allow
+        assert!(is_verb_allowed(&m, Verb::Edit, &t)); // static allow
         assert!(is_verb_allowed(&m, Verb::Insert, &t)); // static allow
     }
 
@@ -835,7 +888,8 @@ mod tests {
     #[test]
     fn substitute_opt_colon_line_stripped_when_empty() {
         let mut m = empty_match(MatchType::File);
-        m.fields.insert("file".to_string(), "src/main.rs".to_string());
+        m.fields
+            .insert("file".to_string(), "src/main.rs".to_string());
         // line absent → strip the `:` before {line}
         assert_eq!(substitute_opt("hx {file}:{line}", &m), "hx src/main.rs");
     }
@@ -843,18 +897,26 @@ mod tests {
     #[test]
     fn substitute_opt_plus_line_stripped_when_empty() {
         let mut m = empty_match(MatchType::File);
-        m.fields.insert("file".to_string(), "src/main.rs".to_string());
+        m.fields
+            .insert("file".to_string(), "src/main.rs".to_string());
         // `+` and preceding space both stripped
-        assert_eq!(substitute_opt("nvim +{line} {file}", &m), "nvim src/main.rs");
+        assert_eq!(
+            substitute_opt("nvim +{line} {file}", &m),
+            "nvim src/main.rs"
+        );
     }
 
     #[test]
     fn substitute_opt_line_present_no_stripping() {
         let mut m = empty_match(MatchType::File);
-        m.fields.insert("file".to_string(), "src/main.rs".to_string());
+        m.fields
+            .insert("file".to_string(), "src/main.rs".to_string());
         m.fields.insert("line".to_string(), "42".to_string());
         assert_eq!(substitute_opt("hx {file}:{line}", &m), "hx src/main.rs:42");
-        assert_eq!(substitute_opt("nvim +{line} {file}", &m), "nvim +42 src/main.rs");
+        assert_eq!(
+            substitute_opt("nvim +{line} {file}", &m),
+            "nvim +42 src/main.rs"
+        );
     }
 
     #[test]
@@ -921,7 +983,10 @@ mod tests {
     #[test]
     fn substitute_universal_vars() {
         let m = url_match();
-        assert_eq!(substitute("{type}: {match}", &m), "url: https://example.com");
+        assert_eq!(
+            substitute("{type}: {match}", &m),
+            "url: https://example.com"
+        );
         assert_eq!(substitute("{display}", &m), "https://example.com");
     }
 
@@ -945,7 +1010,10 @@ mod tests {
         // Only `{{` → `{` is escaped; `}` outside a placeholder is literal.
         // Phase 7 refines when KDL templates are user-facing.
         let m = url_match();
-        assert_eq!(substitute("{{literal} {url}", &m), "{literal} https://example.com");
+        assert_eq!(
+            substitute("{{literal} {url}", &m),
+            "{literal} https://example.com"
+        );
     }
 
     #[test]
@@ -958,7 +1026,10 @@ mod tests {
     fn shell_quote_passes_safe_strings_through() {
         assert_eq!(shell_quote("src/main.rs"), "src/main.rs");
         assert_eq!(shell_quote("/etc/hosts"), "/etc/hosts");
-        assert_eq!(shell_quote("~/dotfiles/config.kdl"), "~/dotfiles/config.kdl");
+        assert_eq!(
+            shell_quote("~/dotfiles/config.kdl"),
+            "~/dotfiles/config.kdl"
+        );
         assert_eq!(shell_quote("a.b.c-1_2"), "a.b.c-1_2");
     }
 

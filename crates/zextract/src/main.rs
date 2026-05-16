@@ -22,7 +22,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget};
+use ratatui::widgets::{
+    Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget,
+};
 use zellij_tile::prelude::*;
 
 use crate::action::{DispatchResult, Verb};
@@ -471,7 +473,11 @@ impl State {
                 self.apply_config_after_load();
             }
             Err(e) => {
-                plog!(self, LogLevel::Warn, "config load: parse err {e} — using defaults");
+                plog!(
+                    self,
+                    LogLevel::Warn,
+                    "config load: parse err {e} — using defaults"
+                );
                 self.banner = Some(BannerKind::ParseError(e.to_string()));
             }
         }
@@ -496,9 +502,8 @@ impl State {
         match std::fs::write(path, DEFAULT_CONFIG) {
             Ok(()) => {
                 self.banner = None;
-                self.message = Some(
-                    "Config written — edit ~/.config/zellij/zextract.kdl and reload".into(),
-                );
+                self.message =
+                    Some("Config written — edit ~/.config/zellij/zextract.kdl and reload".into());
             }
             Err(e) => {
                 self.banner = Some(BannerKind::ParseError(format!("write failed: {e}")));
@@ -513,10 +518,7 @@ impl State {
     /// preview widths take effect immediately rather than waiting for
     /// the next preview toggle.
     fn apply_config_after_load(&mut self) {
-        let initial_preview_open = matches!(
-            self.config.ui.preview,
-            config::PreviewDefault::Always
-        );
+        let initial_preview_open = matches!(self.config.ui.preview, config::PreviewDefault::Always);
         if self.preview_open != initial_preview_open {
             self.preview_open = initial_preview_open;
         }
@@ -539,7 +541,13 @@ impl State {
             self.preview_open = force_preview;
         }
         if let Some(ref grab_name) = self.launch_grab.clone() {
-            if let Some(idx) = self.config.grab.profiles.iter().position(|p| p.name == *grab_name) {
+            if let Some(idx) = self
+                .config
+                .grab
+                .profiles
+                .iter()
+                .position(|p| p.name == *grab_name)
+            {
                 self.current_grab_profile_index = idx;
             }
         }
@@ -554,17 +562,28 @@ impl State {
         if self.extraction_done {
             return;
         }
-        let Some(source) = self.source_pane else { return };
+        let Some(source) = self.source_pane else {
+            return;
+        };
 
         // Pick up the active grab profile. current_grab_profile_index
         // was set in apply_config_after_load — or remains 0 (the first
         // default profile = `quick { source scrollback; lines 150 }`)
         // if config hasn't loaded yet, which matches the old Phase 1
         // behavior verbatim.
-        let profile = match self.config.grab.profiles.get(self.current_grab_profile_index) {
+        let profile = match self
+            .config
+            .grab
+            .profiles
+            .get(self.current_grab_profile_index)
+        {
             Some(p) => p.clone(),
             None => {
-                plog!(self, LogLevel::Warn, "try_extract: no grab profiles available");
+                plog!(
+                    self,
+                    LogLevel::Warn,
+                    "try_extract: no grab profiles available"
+                );
                 return;
             }
         };
@@ -752,8 +771,7 @@ impl State {
                 // Plain printable char with no non-shift modifier: type
                 // into the query.
                 if key.has_no_modifiers()
-                    || (key.has_modifiers(&[KeyModifier::Shift])
-                        && key.key_modifiers.len() == 1)
+                    || (key.has_modifiers(&[KeyModifier::Shift]) && key.key_modifiers.len() == 1)
                 {
                     self.query.push(c);
                     self.refilter();
@@ -777,8 +795,7 @@ impl State {
             BareKey::Char(c) => {
                 // Non-shift modifiers (Ctrl/Alt) reserved for universals.
                 if !(key.has_no_modifiers()
-                    || (key.has_modifiers(&[KeyModifier::Shift])
-                        && key.key_modifiers.len() == 1))
+                    || (key.has_modifiers(&[KeyModifier::Shift]) && key.key_modifiers.len() == 1))
                 {
                     return false;
                 }
@@ -861,11 +878,7 @@ impl State {
                 .and_then(|&i| self.matches.get(i))
                 .map(|m| m.effective_tag())
                 .unwrap_or("selection");
-            self.message = Some(format!(
-                "'{}' not available for [{}]",
-                verb.label(),
-                sample
-            ));
+            self.message = Some(format!("'{}' not available for [{}]", verb.label(), sample));
             return true;
         }
 
@@ -930,7 +943,13 @@ impl State {
             Verb::Open | Verb::Reveal => {
                 for &i in &allowed {
                     if let Some(m) = self.matches.get(i).cloned() {
-                        action::dispatch(verb, &m, self.source_pane, &self.config.types, &self.config.actions);
+                        action::dispatch(
+                            verb,
+                            &m,
+                            self.source_pane,
+                            &self.config.types,
+                            &self.config.actions,
+                        );
                     }
                 }
                 close_self();
@@ -950,12 +969,20 @@ impl State {
                     .filter_map(|&i| self.matches.get(i))
                     .filter_map(|m| {
                         let tag = m.effective_tag();
-                        let tmpl = self.config.actions.overrides.get(tag)
+                        let tmpl = self
+                            .config
+                            .actions
+                            .overrides
+                            .get(tag)
                             .or_else(|| self.config.actions.overrides.get("default"))
                             .and_then(|t| t.edit.as_deref())
                             .unwrap_or(action::DEFAULT_EDIT_TEMPLATE);
                         let cmd = action::substitute_opt(tmpl, m);
-                        if cmd.is_empty() { None } else { Some(cmd) }
+                        if cmd.is_empty() {
+                            None
+                        } else {
+                            Some(cmd)
+                        }
                     })
                     .collect();
                 if !cmds.is_empty() {
@@ -985,7 +1012,13 @@ impl State {
             self.toggle_preview();
             return true;
         }
-        match action::dispatch(verb, m, self.source_pane, &self.config.types, &self.config.actions) {
+        match action::dispatch(
+            verb,
+            m,
+            self.source_pane,
+            &self.config.types,
+            &self.config.actions,
+        ) {
             DispatchResult::Closed => {
                 close_self();
                 false
@@ -1020,7 +1053,9 @@ impl State {
 
     /// Toggle the highlighted row's membership in the multi-selection.
     fn toggle_select_current(&mut self) {
-        let Some(idx) = self.current_match_index() else { return };
+        let Some(idx) = self.current_match_index() else {
+            return;
+        };
         if !self.selected.insert(idx) {
             self.selected.remove(&idx);
         }
@@ -1071,19 +1106,20 @@ impl State {
         let x = recenter_x_for_width(w);
         let Some(coords) = FloatingPaneCoordinates::new(
             x.map(|s| s.to_string()),
-            None,                       // keep current y
+            None, // keep current y
             Some(w.to_string()),
-            None,                       // keep current height
-            None,                       // pinned unchanged
-            None,                       // borderless unchanged
+            None, // keep current height
+            None, // pinned unchanged
+            None, // borderless unchanged
         ) else {
-            plog!(self, LogLevel::Warn, "resize: failed to build coords for w={w:?}");
+            plog!(
+                self,
+                LogLevel::Warn,
+                "resize: failed to build coords for w={w:?}"
+            );
             return;
         };
-        change_floating_panes_coordinates(vec![(
-            PaneId::Plugin(self.own_plugin_id),
-            coords,
-        )]);
+        change_floating_panes_coordinates(vec![(PaneId::Plugin(self.own_plugin_id), coords)]);
     }
 
     fn refilter(&mut self) {
@@ -1100,10 +1136,7 @@ impl State {
         // change at the call site (extend the slice). Cache the result
         // so the renderer can show active filter pills without
         // re-parsing every frame.
-        let mut tags: Vec<&str> = extract::TYPE_PRIORITY
-            .iter()
-            .map(|t| t.tag())
-            .collect();
+        let mut tags: Vec<&str> = extract::TYPE_PRIORITY.iter().map(|t| t.tag()).collect();
         for cp in &self.config.patterns.custom {
             tags.push(&cp.name);
         }
@@ -1120,8 +1153,8 @@ impl State {
             .enumerate()
             .filter(|(_, m)| {
                 let tag = m.effective_tag();
-                let include_ok = parsed.includes.is_empty()
-                    || parsed.includes.iter().any(|t| t == tag);
+                let include_ok =
+                    parsed.includes.is_empty() || parsed.includes.iter().any(|t| t == tag);
                 let exclude_ok = !parsed.excludes.iter().any(|t| t == tag);
                 include_ok && exclude_ok
             })
@@ -1162,7 +1195,10 @@ impl State {
             .collect();
 
         let new_selection = if let Some(prev) = prev_selected_match_idx {
-            self.filtered.iter().position(|s| s.index == prev).unwrap_or(0)
+            self.filtered
+                .iter()
+                .position(|s| s.index == prev)
+                .unwrap_or(0)
         } else {
             0
         };
@@ -1188,10 +1224,7 @@ impl State {
         let grab_label_width = (max_name + 4) as u16; // [name] + 2 spaces
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(grab_label_width),
-            ])
+            .constraints([Constraint::Min(1), Constraint::Length(grab_label_width)])
             .split(area);
 
         let count_text = if self.matches.is_empty() && !self.extraction_done {
@@ -1209,13 +1242,17 @@ impl State {
         let (mode_tag, marker_style, query_style, cursor_glyph) = match self.mode {
             Mode::Input => (
                 "[INPUT]",
-                Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
                 Style::default(),
                 "█",
             ),
             Mode::List => (
                 "[LIST]",
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
                 Style::default().fg(Color::DarkGray),
                 " ",
             ),
@@ -1225,7 +1262,9 @@ impl State {
             Span::styled(self.query.clone(), query_style),
             Span::styled(
                 cursor_glyph,
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
             ),
             Span::raw("   "),
         ];
@@ -1247,17 +1286,20 @@ impl State {
             ));
             spans.push(Span::raw(" "));
         }
-        if !self.parsed_query.includes.is_empty()
-            || !self.parsed_query.excludes.is_empty()
-        {
+        if !self.parsed_query.includes.is_empty() || !self.parsed_query.excludes.is_empty() {
             spans.push(Span::raw(" "));
         }
 
-        spans.push(Span::styled(count_text, Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(
+            count_text,
+            Style::default().fg(Color::DarkGray),
+        ));
         spans.push(Span::raw("   "));
         spans.push(Span::styled(
             mode_tag,
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM),
         ));
         Paragraph::new(Line::from(spans))
             .block(Block::default().borders(Borders::ALL).title("zextract"))
@@ -1265,7 +1307,12 @@ impl State {
 
         // Grab-profile label: vertically centered, normal text color,
         // bracketed. `g` in List mode cycles it.
-        if let Some(p) = self.config.grab.profiles.get(self.current_grab_profile_index) {
+        if let Some(p) = self
+            .config
+            .grab
+            .profiles
+            .get(self.current_grab_profile_index)
+        {
             let label = format!("[{}]", p.name);
             Paragraph::new(vec![
                 Line::from(""),
@@ -1280,12 +1327,23 @@ impl State {
     fn render_list(&mut self, area: Rect, buf: &mut Buffer) {
         if self.matches.is_empty() {
             let (msg, hint) = if self.extraction_done {
-                ("No matches in pane scrollback.", Some("Try Alt-g to widen the grab depth"))
+                (
+                    "No matches in pane scrollback.",
+                    Some("Try Alt-g to widen the grab depth"),
+                )
             } else {
                 ("Extracting…", None)
             };
             let lines = if let Some(h) = hint {
-                vec![Line::from(msg), Line::from(Span::styled(h, Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)))]
+                vec![
+                    Line::from(msg),
+                    Line::from(Span::styled(
+                        h,
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::DIM),
+                    )),
+                ]
             } else {
                 vec![Line::from(msg)]
             };
@@ -1335,7 +1393,10 @@ impl State {
                 // Truncate so the display fits in the list column.
                 let tag_overhead = m.effective_tag().chars().count() + 5; // [tag]  = tag+4 + gutter
                 let avail = (area.width as usize).saturating_sub(tag_overhead);
-                let use_middle = matches!(m.ty, MatchType::Url | MatchType::File | MatchType::Diagnostic);
+                let use_middle = matches!(
+                    m.ty,
+                    MatchType::Url | MatchType::File | MatchType::Diagnostic
+                );
                 let display = truncate_display(&m.display, avail, use_middle);
                 spans.extend(highlight_spans(&display, &s.indices));
                 ListItem::new(Line::from(spans))
@@ -1443,7 +1504,10 @@ impl State {
                     if hl_start > 0 {
                         spans.push(Span::raw(line_text[..hl_start].to_string()));
                     }
-                    spans.push(Span::styled(line_text[hl_start..hl_end].to_string(), highlight_style));
+                    spans.push(Span::styled(
+                        line_text[hl_start..hl_end].to_string(),
+                        highlight_style,
+                    ));
                     if hl_end < line_text.len() {
                         spans.push(Span::raw(line_text[hl_end..].to_string()));
                     }
@@ -1492,7 +1556,11 @@ impl State {
                 line1.push(Span::styled("p", bold));
                 line1.push(Span::raw(format!(
                     ":{}  ",
-                    if self.preview_open { "preview-off" } else { "preview-on" }
+                    if self.preview_open {
+                        "preview-off"
+                    } else {
+                        "preview-on"
+                    }
                 )));
                 line1.push(Span::styled("J", bold));
                 line1.push(Span::raw(":json  "));
@@ -1633,7 +1701,9 @@ fn truncate_display(s: &str, max_chars: usize, middle: bool) -> String {
     if middle {
         let half = (max_chars - 1) / 2;
         let left: String = chars[..half].iter().collect();
-        let right: String = chars[chars.len() - (max_chars - 1 - half)..].iter().collect();
+        let right: String = chars[chars.len() - (max_chars - 1 - half)..]
+            .iter()
+            .collect();
         format!("{left}…{right}")
     } else {
         let truncated: String = chars[..max_chars - 1].iter().collect();
@@ -1657,14 +1727,22 @@ fn highlight_spans(display: &str, indices: &[u32]) -> Vec<Span<'static>> {
     for (i, ch) in display.chars().enumerate() {
         let this_hi = hi.contains(&(i as u32));
         if this_hi != current_hi && !current.is_empty() {
-            let style = if current_hi { highlight } else { Style::default() };
+            let style = if current_hi {
+                highlight
+            } else {
+                Style::default()
+            };
             spans.push(Span::styled(std::mem::take(&mut current), style));
         }
         current_hi = this_hi;
         current.push(ch);
     }
     if !current.is_empty() {
-        let style = if current_hi { highlight } else { Style::default() };
+        let style = if current_hi {
+            highlight
+        } else {
+            Style::default()
+        };
         spans.push(Span::styled(current, style));
     }
     spans
@@ -1690,11 +1768,19 @@ impl State {
         let home = match std::env::var("HOME") {
             Ok(h) if !h.is_empty() => h,
             _ => {
-                plog!(self, LogLevel::Warn, "config load: no $HOME — using defaults");
+                plog!(
+                    self,
+                    LogLevel::Warn,
+                    "config load: no $HOME — using defaults"
+                );
                 return false;
             }
         };
-        plog!(self, LogLevel::Debug, "config load: change_host_folder -> {home:?}");
+        plog!(
+            self,
+            LogLevel::Debug,
+            "config load: change_host_folder -> {home:?}"
+        );
         change_host_folder(std::path::PathBuf::from(&home));
         true
     }
@@ -1770,8 +1856,12 @@ fn line_index_for_span(text: &str, byte_offset: usize) -> usize {
 fn char_boundary_clamp(s: &str, start: usize, end: usize) -> (usize, usize) {
     let start = start.min(s.len());
     let end = end.min(s.len());
-    let start = (start..=s.len()).find(|&i| s.is_char_boundary(i)).unwrap_or(s.len());
-    let end = (end..=s.len()).find(|&i| s.is_char_boundary(i)).unwrap_or(s.len());
+    let start = (start..=s.len())
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(s.len());
+    let end = (end..=s.len())
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(s.len());
     (start, end)
 }
 

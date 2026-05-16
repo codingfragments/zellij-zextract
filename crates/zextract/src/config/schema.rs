@@ -411,7 +411,12 @@ fn parse_patterns_block(nodes: &[Node], patterns: &mut PatternsConfig) {
         let Some(regex) = regex else {
             continue; // no regex = no pattern
         };
-        patterns.custom.push(CustomPattern { name, regex, ty, template });
+        patterns.custom.push(CustomPattern {
+            name,
+            regex,
+            ty,
+            template,
+        });
     }
 }
 
@@ -687,7 +692,12 @@ mod tests {
     #[test]
     fn grab_default_block_omitted_keeps_defaults() {
         let config = Config::from_ast(&[]);
-        let names: Vec<&str> = config.grab.profiles.iter().map(|p| p.name.as_str()).collect();
+        let names: Vec<&str> = config
+            .grab
+            .profiles
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
         assert_eq!(names, vec!["quick", "deep", "viewport", "full"]);
         assert_eq!(config.grab.default_profile, "quick");
     }
@@ -711,7 +721,12 @@ mod tests {
         )
         .unwrap();
         let config = Config::from_ast(&nodes);
-        let names: Vec<&str> = config.grab.profiles.iter().map(|p| p.name.as_str()).collect();
+        let names: Vec<&str> = config
+            .grab
+            .profiles
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
         assert_eq!(names, vec!["tiny", "huge"]);
         assert_eq!(config.grab.default_profile, "tiny");
         assert_eq!(config.grab.profiles[0].lines, Some(50));
@@ -729,7 +744,12 @@ mod tests {
         )
         .unwrap();
         let config = Config::from_ast(&nodes);
-        let vp = config.grab.profiles.iter().find(|p| p.name == "viewport").unwrap();
+        let vp = config
+            .grab
+            .profiles
+            .iter()
+            .find(|p| p.name == "viewport")
+            .unwrap();
         assert_eq!(vp.source, GrabSource::Viewport);
         assert_eq!(vp.lines, None);
     }
@@ -834,7 +854,10 @@ mod tests {
         assert_eq!(p.name, "jira");
         assert_eq!(p.regex, "[A-Z]+-[0-9]+");
         assert_eq!(p.ty, "url");
-        assert_eq!(p.template.as_deref(), Some("https://jira.example.com/browse/{match}"));
+        assert_eq!(
+            p.template.as_deref(),
+            Some("https://jira.example.com/browse/{match}")
+        );
     }
 
     #[test]
@@ -853,10 +876,7 @@ mod tests {
     fn patterns_missing_regex_skipped() {
         // A pattern block without `regex` is dropped — can't extract
         // without a regex.
-        let nodes = parse::parse(
-            r#"patterns { broken { type "url" } }"#,
-        )
-        .unwrap();
+        let nodes = parse::parse(r#"patterns { broken { type "url" } }"#).unwrap();
         let config = Config::from_ast(&nodes);
         assert!(config.patterns.custom.is_empty());
     }
@@ -945,10 +965,8 @@ mod tests {
     #[test]
     fn actions_unknown_verb_ignored() {
         // `future_verb command "..."` — unknown verb, silently dropped.
-        let nodes = parse::parse(
-            r#"actions { file { future_verb command "something" } }"#,
-        )
-        .unwrap();
+        let nodes =
+            parse::parse(r#"actions { file { future_verb command "something" } }"#).unwrap();
         let config = Config::from_ast(&nodes);
         assert!(config.actions.overrides.is_empty());
     }
