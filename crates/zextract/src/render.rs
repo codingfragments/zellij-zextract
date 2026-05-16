@@ -22,7 +22,9 @@ pub fn flush(buf: &Buffer) {
     for y in 0..area.height {
         let _ = write!(out, "\x1b[{};1H", y + 1);
         for x in 0..area.width {
-            let Some(cell) = buf.cell((x, y)) else { continue };
+            let Some(cell) = buf.cell((x, y)) else {
+                continue;
+            };
             let style = cell.style();
             if last_style != Some(style) {
                 out.push_str("\x1b[0m");

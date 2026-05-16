@@ -36,9 +36,7 @@ pub fn extract(text: &str) -> Vec<Match> {
             if let Some(scheme_end) = raw.find("://") {
                 fields.insert("scheme".to_string(), raw[..scheme_end].to_string());
                 let after = &raw[scheme_end + 3..];
-                let host_end = after
-                    .find(|c: char| matches!(c, '/' | '?' | '#'))
-                    .unwrap_or(after.len());
+                let host_end = after.find(['/', '?', '#']).unwrap_or(after.len());
                 fields.insert("host".to_string(), after[..host_end].to_string());
             }
             out.push(Match {
@@ -46,7 +44,8 @@ pub fn extract(text: &str) -> Vec<Match> {
                 raw: raw.clone(),
                 display: raw,
                 context: line.to_string(),
-                label: None, span: (span_start, span_end),
+                label: None,
+                span: (span_start, span_end),
                 fields,
             });
         }

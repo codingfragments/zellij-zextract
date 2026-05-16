@@ -58,6 +58,13 @@ dev-b: build-b
 test:
     cargo test -p zextract
 
+# Run the same checks as CI: fmt, clippy, test, wasm build
+check:
+    cargo fmt --all -- --check
+    cargo clippy --all-targets -- -D warnings
+    cargo test
+    cargo build --release --target wasm32-wasip1
+
 clean:
     cargo clean
 

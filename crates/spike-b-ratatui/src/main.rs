@@ -16,7 +16,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget};
+use ratatui::widgets::{
+    Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget,
+};
 use zellij_tile::prelude::*;
 
 struct State {
@@ -32,9 +34,7 @@ impl Default for State {
         list_state.select(Some(0));
         Self {
             items: (1..=30)
-                .map(|i| {
-                    format!("Item {i:02} — unicode test ❯ ● ▸ ✓ ⚠ — width-sensitive glyphs")
-                })
+                .map(|i| format!("Item {i:02} — unicode test ❯ ● ▸ ✓ ⚠ — width-sensitive glyphs"))
                 .collect(),
             list_state,
             last_size: (0, 0),

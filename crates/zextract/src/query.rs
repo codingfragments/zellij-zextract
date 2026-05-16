@@ -117,7 +117,10 @@ fn resolve_tag<'a>(prefix: &str, known_tags: &'a [&'a str]) -> Option<&'a str> {
 }
 
 fn eq_ic(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).all(|(x, y)| x.eq_ignore_ascii_case(&y))
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .all(|(x, y)| x.eq_ignore_ascii_case(&y))
 }
 
 fn starts_with_ic(haystack: &str, prefix: &str) -> bool {

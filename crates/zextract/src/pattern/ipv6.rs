@@ -23,10 +23,8 @@ fn ipv6_regex() -> &'static Regex {
         //   - bracketed:   \[...\](:port)?
         //   - plain:       XXXX(:XXXX){2,7}  where each XXXX is 0-4 hex digits,
         //                  so the empty group inside `::` is allowed
-        Regex::new(
-            r"(?i)(\[[0-9a-f:]+\](?::\d{1,5})?)|([0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,7})",
-        )
-        .expect("ipv6 regex compiles")
+        Regex::new(r"(?i)(\[[0-9a-f:]+\](?::\d{1,5})?)|([0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,7})")
+            .expect("ipv6 regex compiles")
     })
 }
 
@@ -51,7 +49,8 @@ pub fn extract(text: &str) -> Vec<Match> {
                 raw: raw.clone(),
                 display: raw,
                 context: line.to_string(),
-                label: None, span: (span_start, span_end),
+                label: None,
+                span: (span_start, span_end),
                 fields,
             });
         }

@@ -438,16 +438,14 @@ mod tests {
 
     #[test]
     fn nested_blocks() {
-        let nodes = p(
-            r#"
+        let nodes = p(r#"
             grab {
                 profiles {
                     quick { lines 150 }
                     deep { lines 1500 }
                 }
             }
-            "#,
-        );
+            "#);
         assert_eq!(nodes[0].name, "grab");
         assert_eq!(nodes[0].children[0].name, "profiles");
         assert_eq!(nodes[0].children[0].children.len(), 2);
@@ -469,8 +467,7 @@ mod tests {
 
     #[test]
     fn line_comments_skipped() {
-        let nodes = p(
-            r#"
+        let nodes = p(r#"
             // first comment
             ui {
                 preview "off"  // trailing comment
@@ -478,8 +475,7 @@ mod tests {
                 mask_secrets false
             }
             // final
-            "#,
-        );
+            "#);
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].children.len(), 2);
     }
@@ -584,6 +580,9 @@ mod tests {
         // Top-level: ui, grab, patterns, types, actions, limits = 6
         assert_eq!(nodes.len(), 6);
         let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
-        assert_eq!(names, vec!["ui", "grab", "patterns", "types", "actions", "limits"]);
+        assert_eq!(
+            names,
+            vec!["ui", "grab", "patterns", "types", "actions", "limits"]
+        );
     }
 }
