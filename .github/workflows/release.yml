@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build release artifact
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for release notes
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build wasm
+        run: cargo build --locked --release --target wasm32-wasip1
+
+      - name: Compute SHA-256
+        run: |
+          sha256sum target/wasm32-wasip1/release/zextract.wasm \
+            > target/wasm32-wasip1/release/zextract.wasm.sha256
+          cat target/wasm32-wasip1/release/zextract.wasm.sha256
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/wasm32-wasip1/release/zextract.wasm
+            target/wasm32-wasip1/release/zextract.wasm.sha256
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            Download `zextract.wasm` and drop it into `~/.config/zellij/plugins/`.
+
+            Add a keybind to `~/.config/zellij/config.kdl`:
+            ```kdl
+            bind "Alt x" {
+                LaunchOrFocusPlugin "file://$HOME/.config/zellij/plugins/zextract.wasm" {
+                    floating true;
+                };
+            }
+            ```
+
+            Verify the download:
+            ```sh
+            sha256sum -c zextract.wasm.sha256
+            ```
+
+            See [README](https://github.com/${{ github.repository }}/blob/main/README.md) for full documentation.

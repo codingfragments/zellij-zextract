@@ -1,5 +1,8 @@
 # zextract
 
+[![CI](https://github.com/codingfragments/zellij-zextract/actions/workflows/ci.yml/badge.svg)](https://github.com/codingfragments/zellij-zextract/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/codingfragments/zellij-zextract)](https://github.com/codingfragments/zellij-zextract/releases/latest)
+
 A [Zellij](https://zellij.dev) plugin that extracts typed matches from your focused pane's scrollback and presents them in a fuzzy-filterable picker with type-aware actions.
 
 Fills the gap left by tmux tools like `extrakto`, `fingers`, and `fzf-links` for Zellij users.
@@ -23,9 +26,23 @@ Press a keybind → a floating picker opens → the scrollback of your previous 
 ### Requirements
 
 - Zellij 0.44.x (plugin ABI is version-locked — see [CLAUDE.md](CLAUDE.md) for details)
-- Rust + `wasm32-wasip1` target
 
-### Build
+### Option 1 — Download binary (recommended)
+
+Download `zextract.wasm` from the [latest release](https://github.com/codingfragments/zellij-zextract/releases/latest):
+
+```sh
+# Verify checksum
+sha256sum -c zextract.wasm.sha256
+
+# Install
+mkdir -p ~/.config/zellij/plugins
+cp zextract.wasm ~/.config/zellij/plugins/
+```
+
+### Option 2 — Build from source
+
+Requires Rust + `wasm32-wasip1` target:
 
 ```sh
 rustup target add wasm32-wasip1
