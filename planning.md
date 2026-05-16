@@ -45,7 +45,7 @@ the decisions made during design.
 | Default dimensions | 70%×60% centered floating pane |
 | Movement keys | Arrow keys only |
 | Insert keys | `i` (raw) / `I` (display) in List mode |
-| Scrollback grab | Three modes: `recent` (default, capped at 150 lines) → `viewport` → `full`; `Ctrl-g` cycles |
+| Scrollback grab | Named profiles in config (Phase 7); `Ctrl-g` cycles through them at runtime (Phase 8). Defaults: `quick` (last 150) → `deep` (last 1500) → `viewport` → `full`. Optionally bindable to direct-jump keys |
 | Snapshot tests | `insta` |
 | Logging | `eprintln!` to stderr, no external crate |
 
@@ -372,13 +372,35 @@ via `~/.config/zellij/zextract.kdl`.
   overridable via `config_path "..."` directive in the zellij plugin block.
 - Config schema covers (matching the spec section "Configuration"):
   - `ui { width height position preview preview_open_width preview_closed_width
-     mask_secrets grab recent_lines theme {...} }`
+     mask_secrets theme {...} }`
     - `preview` — default open/closed state: `off` / `auto` / `always` (Phase 4 hardcoded to `off`)
     - `preview_open_width` — width % when preview pane is open (Phase 4 hardcoded `"90%"`)
     - `preview_closed_width` — width % when preview pane is closed (Phase 4 hardcoded `"70%"`)
     - The Phase 4 pane-grow-on-preview behavior (auto-resize via
       `change_floating_panes_coordinates`) becomes config-driven here:
       both widths and the open/closed default state user-tweakable.
+  - `grab { profiles { ... } default_profile "..." }` — **named grab profiles**
+    (the existing simple `grab "recent" | "viewport" | "full"` + `recent_lines`
+    flat keys collapse into this richer model). User defines as many as
+    they want and `Ctrl-g` cycles through them in the picker (Phase 8).
+    Each profile has:
+      - `name "quick" | "deep" | "viewport" | "full" | ...`
+      - `source "scrollback" | "viewport"` (scrollback includes lines above viewport)
+      - `lines N` — how many trailing lines to keep (or `0` / unset for unbounded)
+    Default config ships e.g. three profiles:
+      ```
+      grab {
+          default_profile "quick"
+          profiles {
+              quick    { source "scrollback"  lines 150  }
+              deep     { source "scrollback"  lines 1500 }
+              viewport { source "viewport"              }
+              full     { source "scrollback"            }
+          }
+      }
+      ```
+    Plus optional `bind "Ctrl 1" profile "quick"` style direct-jump
+    bindings (deferred from v1 if too much surface).
   - `patterns { url {...} file {...} ... secret { formats {...} entropy_fallback {...} } command { prompts triggers continuation_strip } }`
   - `types { url { actions [...] default ... } ... }`
   - `actions { url { open command "..." } file { edit command "..." reveal command "..." } ... }`
@@ -449,9 +471,16 @@ via `~/.config/zellij/zextract.kdl`.
 - Empty states per Q29:
   - "No matches in pane scrollback" with `Ctrl-g` suggestion when grab=viewport.
   - "No matches for <query>" when filter empties the list.
-- `Ctrl-g` cycles grab area: `recent (capped)` → `viewport` → `full` → `recent`; re-runs extraction on each switch.
-  Current mode shown in the stats strip as e.g. `grab:recent(150)` / `grab:viewport` / `grab:full(2847 lines)`.
-  Status bar briefly displays match-count delta after cycling (`+18 matches`) so user can tell if widening helped.
+- `Ctrl-g` cycles through configured grab profiles (Phase 7 defines them
+  in `grab { profiles { ... } }`; v1 defaults are `quick` → `deep` →
+  `viewport` → `full`). Each switch re-runs extraction.
+  Current profile shown in the stats strip as e.g. `grab:quick(150)` /
+  `grab:deep(1500)` / `grab:viewport` / `grab:full(2847 lines)`.
+  Status bar briefly displays match-count delta after cycling
+  (`+18 matches`) so user can tell if widening helped.
+- Optional Phase-8-or-v2: direct-jump bindings (`Ctrl-1` …) to skip
+  straight to a named profile without cycling. Config holds the bind
+  table; runtime reads on Ctrl-N press.
 - Truncation per Q26: middle-truncate for url/file, end-truncate for others.
 - Minimum-size guard: render "terminal too small" at <60×15.
 - Edge cases:
@@ -560,10 +589,20 @@ ui {
     preview_closed_width "70%"   // floating pane width when preview is closed
     preview_open_width "90%"     // floating pane width when preview is open (recentered)
     mask_secrets false           // show secret values in the picker (false = visible)
-    grab "recent"                // recent | viewport | full ; Ctrl-g in the picker cycles
-    recent_lines 150             // when grab="recent", scan only the last N lines of scrollback
     editor_command_prefix "nvim" // fallback when $EDITOR is unset
     // theme block omitted — uses built-in palette
+}
+
+// Named scrollback-grab profiles. Ctrl-g in the picker cycles through
+// these in declaration order. Add or rearrange to suit your workflow.
+grab {
+    default_profile "quick"      // profile loaded on picker launch
+    profiles {
+        quick    { source "scrollback"  lines 150  }
+        deep     { source "scrollback"  lines 1500 }
+        viewport { source "viewport"              }   // just what's on screen
+        full     { source "scrollback"            }   // unbounded (caveat: extraction cost)
+    }
 }
 
 log_level "info"           // off | error | warn | info | debug
