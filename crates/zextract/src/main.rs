@@ -50,6 +50,11 @@ struct State {
     fuzzy: FuzzyEngine,
     filtered: Vec<ScoredMatch>,
     list_state: ListState,
+    /// Multi-selection: indices into `self.matches` (stable across
+    /// filter changes — a row stays selected even when filtered out,
+    /// and re-appears already-selected when the filter brings it back).
+    /// Cleared on picker close.
+    selected: HashSet<usize>,
     source_pane: Option<u32>,
     /// Our own plugin's pane id, used to call
     /// `change_floating_panes_coordinates` when the preview toggles
@@ -61,6 +66,14 @@ struct State {
     /// Transient status-bar message. Cleared on the next keystroke.
     /// Phase 9 will time these out; for now any keypress clears.
     message: Option<String>,
+    /// Reused ratatui Buffer for rendering. Allocating a fresh one
+    /// per frame (rows × cols × ~40 bytes/cell ≈ 500 KB at 90% × 60%)
+    /// churns the WASM allocator hard — linear memory keeps growing
+    /// until Zellij's host refuses (manifests as
+    /// "growth operation limited"). We hold one and re-use it,
+    /// resetting cells per frame and reallocating only when the
+    /// terminal size actually changes.
+    render_buffer: Option<Buffer>,
 }
 
 impl Default for State {
@@ -74,12 +87,14 @@ impl Default for State {
             fuzzy: FuzzyEngine::new(),
             filtered: Vec::new(),
             list_state,
+            selected: HashSet::new(),
             source_pane: None,
             own_plugin_id: 0,
             extraction_done: false,
             mode: Mode::Input,
             preview_open: false,
             message: None,
+            render_buffer: None,
         }
     }
 }
@@ -142,7 +157,22 @@ impl ZellijPlugin for State {
             width: cols as u16,
             height: rows as u16,
         };
-        let mut buf = Buffer::empty(area);
+
+        // Reuse the buffer across renders. Reallocate only when the
+        // terminal size actually changes. `Buffer::reset` clears all
+        // cells in-place without freeing. Hits Zellij's per-plugin
+        // wasm memory cap otherwise — see the field doc on State.
+        //
+        // Split-borrow pattern: take the buffer out of self, render
+        // through it (which needs &mut self for the helpers), then
+        // put it back. mem::take leaves a None placeholder.
+        let mut local_buf = match self.render_buffer.take() {
+            Some(mut b) if b.area() == &area => {
+                b.reset();
+                b
+            }
+            _ => Buffer::empty(area),
+        };
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -153,20 +183,21 @@ impl ZellijPlugin for State {
             ])
             .split(area);
 
-        self.render_input(chunks[0], &mut buf);
+        self.render_input(chunks[0], &mut local_buf);
         if self.preview_open {
             let split = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(chunks[1]);
-            self.render_list(split[0], &mut buf);
-            self.render_preview(split[1], &mut buf);
+            self.render_list(split[0], &mut local_buf);
+            self.render_preview(split[1], &mut local_buf);
         } else {
-            self.render_list(chunks[1], &mut buf);
+            self.render_list(chunks[1], &mut local_buf);
         }
-        self.render_footer(chunks[2], &mut buf);
+        self.render_footer(chunks[2], &mut local_buf);
 
-        render::flush(&buf);
+        render::flush(&local_buf);
+        self.render_buffer = Some(local_buf);
     }
 }
 
@@ -256,6 +287,16 @@ impl State {
             BareKey::Char('y') if only_ctrl => {
                 return self.fire_verb(Verb::CopyRaw);
             }
+            // Ctrl-a → select every match currently visible (post-filter).
+            BareKey::Char('a') if only_ctrl => {
+                self.select_all_visible();
+                return true;
+            }
+            // Ctrl-d → clear the entire selection.
+            BareKey::Char('d') if only_ctrl => {
+                self.deselect_all();
+                return true;
+            }
             _ => {}
         }
         // Mode-specific routing.
@@ -300,6 +341,13 @@ impl State {
     }
 
     fn handle_key_list_mode(&mut self, key: KeyWithModifier) -> bool {
+        // Space toggles selection on the current row. Lives here (not
+        // the universal handler) because Space in Input mode is part of
+        // the query.
+        if matches!(key.bare_key, BareKey::Char(' ')) && key.has_no_modifiers() {
+            self.toggle_select_current();
+            return true;
+        }
         match key.bare_key {
             BareKey::Char(c) => {
                 // Letter keys are action verbs. Non-shift modifiers
@@ -320,17 +368,178 @@ impl State {
     }
 
     fn fire_default_action(&mut self) -> bool {
+        // Default is determined by the highlighted row's type; multi-
+        // select then routes that verb through `fire_verb` which
+        // operates on `effective_targets`.
         let Some(m) = self.current_match().cloned() else {
             return false;
         };
-        self.fire_verb_on_match(action::default_verb(&m), &m)
+        self.fire_verb(action::default_verb(&m))
     }
 
     fn fire_verb(&mut self, verb: Verb) -> bool {
-        let Some(m) = self.current_match().cloned() else {
+        // Preview is a UI-state toggle, short-circuit before the
+        // selection/cap machinery.
+        if matches!(verb, Verb::Preview) {
+            self.toggle_preview();
+            return true;
+        }
+        let targets = self.effective_targets();
+        if targets.is_empty() {
             return false;
-        };
-        self.fire_verb_on_match(verb, &m)
+        }
+        self.dispatch_verb_on_targets(verb, &targets)
+    }
+
+    /// Apply `verb` to every Match index in `targets`. Semantics
+    /// (planning.md Q24):
+    ///
+    /// 1. **Silent-permissive type-mismatch**: skip targets whose type
+    ///    doesn't allow the verb (CopyRaw is universally allowed; secret
+    ///    hardcoded-denies open/edit/reveal; etc.). No status message —
+    ///    user sees only the side effect of the rows that did fire.
+    /// 2. **Loud-reject if zero allowed**: status message, picker stays
+    ///    open. Lets the user re-pick.
+    /// 3. **Per-verb cap**: if N allowed > cap, refuse loudly (no
+    ///    partial fire). User narrows the selection.
+    /// 4. **Single-target path**: delegate to `fire_verb_on_match` for
+    ///    full per-row semantics (line-aware edit command, etc.).
+    /// 5. **Multi-target path**:
+    ///      - copy[raw|display] → join all by `\n`, ONE clipboard write
+    ///      - insert[raw|display] → join all by space (avoid accidental
+    ///        shell-exec from embedded newlines), ONE write_chars
+    ///      - open/reveal → N independent invocations
+    ///      - edit → one combined `$EDITOR file1 file2 …` command
+    ///        (per-file `+line` is dropped — only makes sense for the
+    ///        single-file case)
+    fn dispatch_verb_on_targets(&mut self, verb: Verb, targets: &[usize]) -> bool {
+        let allowed: Vec<usize> = targets
+            .iter()
+            .filter(|&&i| {
+                self.matches
+                    .get(i)
+                    .map(|m| action::is_verb_allowed(m, verb))
+                    .unwrap_or(false)
+            })
+            .copied()
+            .collect();
+
+        if allowed.is_empty() {
+            let sample = targets
+                .first()
+                .and_then(|&i| self.matches.get(i))
+                .map(|m| m.ty.tag())
+                .unwrap_or("selection");
+            self.message = Some(format!(
+                "'{}' not available for [{}]",
+                verb.label(),
+                sample
+            ));
+            return true;
+        }
+
+        let cap = cap_for_verb(verb);
+        if allowed.len() > cap {
+            self.message = Some(format!(
+                "Refused: {} matches exceeds cap of {} for '{}'",
+                allowed.len(),
+                cap,
+                verb.label()
+            ));
+            return true;
+        }
+
+        // Single-target → reuse the existing per-row dispatch path
+        // (preserves edit's +line behavior, action.rs's logging, etc.).
+        if allowed.len() == 1 {
+            let Some(m) = self.matches.get(allowed[0]).cloned() else {
+                return false;
+            };
+            return self.fire_verb_on_match(verb, &m);
+        }
+
+        // Multi-target paths.
+        match verb {
+            Verb::CopyRaw | Verb::CopyDisplay => {
+                let pieces: Vec<String> = allowed
+                    .iter()
+                    .filter_map(|&i| self.matches.get(i))
+                    .map(|m| {
+                        if matches!(verb, Verb::CopyDisplay) {
+                            m.display.clone()
+                        } else {
+                            m.raw.clone()
+                        }
+                    })
+                    .collect();
+                copy_to_clipboard(&pieces.join("\n"));
+                close_self();
+                false
+            }
+            Verb::Insert | Verb::InsertDisplay => {
+                let Some(pane_id) = self.source_pane else {
+                    self.message = Some("insert: no source pane".into());
+                    return true;
+                };
+                let pieces: Vec<String> = allowed
+                    .iter()
+                    .filter_map(|&i| self.matches.get(i))
+                    .map(|m| {
+                        if matches!(verb, Verb::InsertDisplay) {
+                            m.display.clone()
+                        } else {
+                            m.raw.clone()
+                        }
+                    })
+                    .collect();
+                write_chars_to_pane_id(&pieces.join(" "), PaneId::Terminal(pane_id));
+                close_self();
+                false
+            }
+            Verb::Open | Verb::Reveal => {
+                for &i in &allowed {
+                    if let Some(m) = self.matches.get(i).cloned() {
+                        action::dispatch(verb, &m, self.source_pane);
+                    }
+                }
+                close_self();
+                false
+            }
+            Verb::Edit => {
+                let Some(pane_id) = self.source_pane else {
+                    self.message = Some("edit: no source pane".into());
+                    return true;
+                };
+                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".into());
+                let files: Vec<String> = allowed
+                    .iter()
+                    .filter_map(|&i| self.matches.get(i))
+                    .map(|m| {
+                        let f = m
+                            .fields
+                            .get("file")
+                            .map(|s| s.as_str())
+                            .unwrap_or(&m.raw);
+                        action::shell_quote(f)
+                    })
+                    .collect();
+                let cmd = format!("{} {}", editor, files.join(" "));
+                write_chars_to_pane_id(&cmd, PaneId::Terminal(pane_id));
+                close_self();
+                false
+            }
+            Verb::Json => {
+                let refs: Vec<&Match> = allowed
+                    .iter()
+                    .filter_map(|&i| self.matches.get(i))
+                    .collect();
+                let json = action::matches_to_json_array(&refs);
+                copy_to_clipboard(&json);
+                close_self();
+                false
+            }
+            Verb::Preview => unreachable!("Preview short-circuited above"),
+        }
     }
 
     fn fire_verb_on_match(&mut self, verb: Verb, m: &Match) -> bool {
@@ -364,6 +573,51 @@ impl State {
         let i = self.list_state.selected()?;
         let scored = self.filtered.get(i)?;
         self.matches.get(scored.index)
+    }
+
+    /// Index into `self.matches` for the currently-highlighted row,
+    /// or None if there's no selection cursor.
+    fn current_match_index(&self) -> Option<usize> {
+        let i = self.list_state.selected()?;
+        Some(self.filtered.get(i)?.index)
+    }
+
+    /// Toggle the highlighted row's membership in the multi-selection.
+    fn toggle_select_current(&mut self) {
+        let Some(idx) = self.current_match_index() else { return };
+        if !self.selected.insert(idx) {
+            self.selected.remove(&idx);
+        }
+    }
+
+    /// Select every match currently visible in the filtered list.
+    /// Matches filtered out by the current query are untouched.
+    fn select_all_visible(&mut self) {
+        for s in &self.filtered {
+            self.selected.insert(s.index);
+        }
+    }
+
+    fn deselect_all(&mut self) {
+        self.selected.clear();
+    }
+
+    /// The Match indices to act on. If there's a non-empty selection,
+    /// use that. Otherwise fall back to the highlighted row (so single-
+    /// match flows keep working without touching Space first).
+    fn effective_targets(&self) -> Vec<usize> {
+        if !self.selected.is_empty() {
+            // Preserve the filter's recency order in the result.
+            self.filtered
+                .iter()
+                .filter(|s| self.selected.contains(&s.index))
+                .map(|s| s.index)
+                .collect()
+        } else if let Some(i) = self.current_match_index() {
+            vec![i]
+        } else {
+            Vec::new()
+        }
     }
 
     /// Ask Zellij to resize our floating pane based on whether preview
@@ -424,8 +678,16 @@ impl State {
     fn render_input(&self, area: Rect, buf: &mut Buffer) {
         let count_text = if self.matches.is_empty() && !self.extraction_done {
             "(extracting)".to_string()
-        } else {
+        } else if self.selected.is_empty() {
             format!("{}/{}", self.filtered.len(), self.matches.len())
+        } else {
+            // Selection always-visible in the count: e.g. "3 sel · 18/47"
+            format!(
+                "{} sel · {}/{}",
+                self.selected.len(),
+                self.filtered.len(),
+                self.matches.len(),
+            )
         };
         let (mode_tag, marker_style, query_style, cursor_glyph) = match self.mode {
             Mode::Input => (
@@ -488,7 +750,23 @@ impl State {
             .iter()
             .filter_map(|s| self.matches.get(s.index).map(|m| (s, m)))
             .map(|(s, m)| {
+                // Leftmost gutter: `● ` for selected rows, `  ` otherwise.
+                // The `▸ ` cursor marker comes from highlight_symbol and
+                // sits BETWEEN this gutter and the type tag — both visual
+                // signals coexist.
+                let selected = self.selected.contains(&s.index);
+                let gutter = if selected {
+                    Span::styled(
+                        "● ",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Span::raw("  ")
+                };
                 let mut spans = vec![
+                    gutter,
                     Span::styled(
                         format!("[{}]  ", m.ty.tag()),
                         Style::default().fg(type_color(m.ty)),
@@ -606,12 +884,16 @@ impl State {
                     line1.push(Span::styled(verb.key_label(), bold));
                     line1.push(Span::raw(format!(":{}  ", verb.label())));
                 }
-                // Preview key — universal in List mode, always show.
+                // Universal-in-List-mode keys (work for every type).
                 line1.push(Span::styled("p", bold));
                 line1.push(Span::raw(format!(
                     ":{}  ",
                     if self.preview_open { "preview-off" } else { "preview-on" }
                 )));
+                line1.push(Span::styled("J", bold));
+                line1.push(Span::raw(":json  "));
+                line1.push(Span::styled("Space", bold));
+                line1.push(Span::raw(":select  "));
             }
         } else {
             line1.push(Span::raw(" "));
@@ -639,6 +921,10 @@ impl State {
                 Span::raw(":preview  "),
                 Span::styled("⇧⏎", bold),
                 Span::raw(":insert  "),
+                Span::styled("^A", bold),
+                Span::raw(":select-all  "),
+                Span::styled("^D", bold),
+                Span::raw(":clear-sel  "),
             ]);
         }
         line2.push(Span::styled("Esc", bold));
@@ -689,6 +975,24 @@ fn highlight_spans(display: &str, indices: &[u32]) -> Vec<Span<'static>> {
         spans.push(Span::styled(current, style));
     }
     spans
+}
+
+/// Per-verb cap on multi-target dispatch. Conservative defaults — the
+/// idea is to avoid foot-guns (opening 200 browser tabs by accident,
+/// pasting a 50-row wall of text into the prompt).
+///
+/// Phase 7 KDL config will expose these as `limits { copy insert open
+/// command json }`. Numbers come from planning.md Q24.
+fn cap_for_verb(verb: Verb) -> usize {
+    match verb {
+        Verb::CopyRaw | Verb::CopyDisplay => 100,
+        Verb::Insert | Verb::InsertDisplay => 5,
+        Verb::Open => 10,
+        Verb::Edit => 5,
+        Verb::Reveal => 10,
+        Verb::Json => 100,
+        Verb::Preview => usize::MAX,
+    }
 }
 
 /// Compute the 0-based line index of a byte offset within `text`.

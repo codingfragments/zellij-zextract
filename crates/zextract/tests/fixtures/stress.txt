@@ -1,0 +1,262 @@
+$ cd ~/projekte/zextract-stress-test
+$ git status
+On branch feature/multi-pane-grab
+Your branch is ahead of 'origin/main' by 3 commits.
+
+Changes to be committed:
+  modified:   src/main.rs
+  modified:   src/extract.rs
+  modified:   crates/picker/src/lib.rs
+  new file:   tests/fixtures/big_corpus.txt
+  deleted:    legacy/old_picker.rs
+
+Untracked files:
+  .vscode/launch.json
+  scratch.md
+
+$ git log --oneline -12
+a1b2c3d4e5f6 fix: trim trailing punct on file paths
+9f8e7d6c5b4a feat: add command pattern with continuation splice
+6543210abcde refactor: move regex-lite behind feature flag
+fedcba987654 chore: bump zellij-tile to 0.44.3
+0123456789ab perf: reuse buffer across renders
+abcdef012345 docs: update planning.md Phase 9 with release notes
+deadbeef1234 test: add adversarial fixture
+cafebabe5678 feat: secret pattern with entropy fallback
+1a2b3c4d5e6f wip: prototype JSON export
+beefcafe0987 fix: drop pure-numeric sha false positives
+12abcdef9876 feat: cross-pattern dedup by type priority
+567890abcdef chore: rust-toolchain pin to stable
+
+$ rg "TODO" --type rust src/
+src/main.rs:142:    // TODO: wire to config in phase 7
+src/main.rs:298:    // TODO: respect editor_command_prefix from KDL
+src/extract.rs:84:    // TODO: stop after dedup pass
+src/extract.rs:201:    // TODO: surface dedup stats to caller
+src/pattern/command.rs:117:    // TODO: heredoc support v2
+src/pattern/secret.rs:42:    // TODO: gitleaks-style toml import
+src/pattern/file.rs:156:    // TODO: configurable strip patterns
+src/fuzzy.rs:88:    // TODO: highlight scoring weights
+
+$ cargo build --release --target wasm32-wasip1
+   Compiling zextract v0.1.0 (/Users/stefan.marx/projekte/zextract-stress-test)
+error[E0382]: borrow of moved value: `matches`
+   --> src/main.rs:142:8
+    |
+140 |         let matches = self.matches.clone();
+    |             ------- move occurs because `matches` has type `Vec<Match>`
+141 |         consume_all(matches);
+    |                     ------- value moved here
+142 |         for m in &matches {
+    |                   ^^^^^^^ value borrowed here after move
+
+error[E0277]: the trait `Send` is not implemented for `*mut u8`
+   --> crates/picker/src/lib.rs:212:24
+    |
+212 |         thread::spawn(move || render(state));
+    |                       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `cfg`
+  --> src/extract.rs:84:9
+   |
+84 |     let cfg = load_config();
+   |         ^^^ help: consider prefixing with an underscore: `_cfg`
+
+error: aborting due to 2 previous errors
+
+$ cargo clippy -- -D warnings
+   Compiling zextract v0.1.0
+warning: this looks like you are trying to swap `a` and `b`
+   --> src/fuzzy.rs:118:9
+    |
+118 | /         a = b;
+119 | |         b = a;
+    | |____________^ help: try: `std::mem::swap(&mut a, &mut b)`
+
+$ python3 -m pytest tests/test_extraction.py -v
+================================== test session starts ===================================
+platform darwin -- Python 3.11.7, pytest-7.4.4, pluggy-1.3.0
+collected 23 items
+
+tests/test_extraction.py::test_url_basic PASSED                                    [  4%]
+tests/test_extraction.py::test_url_with_query PASSED                               [  8%]
+tests/test_extraction.py::test_file_absolute PASSED                                [ 13%]
+tests/test_extraction.py::test_file_with_line FAILED                               [ 17%]
+tests/test_extraction.py::test_diagnostic_python_traceback FAILED                  [ 21%]
+
+================================== FAILURES ==============================================
+___________________________ test_file_with_line __________________________________________
+
+    def test_file_with_line():
+        m = extract("error at src/main.rs:42:8 here")
+        assert len(m) == 1
+>       assert m[0].fields["line"] == "42"
+E       AssertionError: assert '' == '42'
+
+tests/test_extraction.py:24: AssertionError
+
+Traceback (most recent call last):
+  File "/Users/stefan.marx/projekte/zextract-stress-test/tests/test_extraction.py", line 31, in test_diagnostic_python_traceback
+    self.assertEqual(result.line, 42)
+  File "/usr/local/lib/python3.11/unittest/case.py", line 873, in assertEqual
+    raise self.failureException(msg)
+AssertionError: 0 != 42
+
+$ curl -fsSL https://example.com/install.sh | sudo bash
+Downloading from https://example.com/install.sh ...
+Resolving example.com (example.com)... 93.184.216.34
+Connected to example.com (93.184.216.34) port 443 (#0)
+=> /usr/local/bin/zextract installed.
+=> Bootstrapping configuration to ~/.config/zextract/config.kdl ...
+
+$ wget https://github.com/codingfragments/zellij-zextract/releases/download/v0.1.0/zextract.wasm
+Saving to: 'zextract.wasm'
+zextract.wasm                 100%[==================>]   1.13M  3.2MB/s    in 0.4s
+HTTP 200 OK. Length: 1186742 (1.13M)
+
+$ git remote -v
+origin  git@github.com:codingfragments/zellij-zextract.git (fetch)
+origin  git@github.com:codingfragments/zellij-zextract.git (push)
+upstream  ssh://git@upstream.example.com:2222/codingfragments/zellij-zextract.git (fetch)
+
+$ git fetch upstream
+remote: Enumerating objects: 124, done.
+remote: Counting objects: 100% (124/124), done.
+remote: Compressing objects: 100% (78/78), done.
+Receiving objects: 100% (124/124), 28.42 KiB | 4.74 MiB/s, done.
+Resolving deltas: 100% (62/62), completed with 8 local objects.
+From ssh://upstream.example.com:2222/codingfragments/zellij-zextract
+   c75a360..bf6f3ff  main         -> upstream/main
+ * [new branch]      phase-9/ci    -> upstream/phase-9/ci
+
+$ kubectl get pods -n production --watch
+NAME                                  READY   STATUS    RESTARTS   AGE   IP             NODE
+api-server-7f8d9c4-xyz12              1/1     Running   0          2d    10.0.1.45      node-3
+api-server-7f8d9c4-abc34              1/1     Running   0          2d    10.0.1.46      node-1
+worker-pool-5b6c7d8-pqr99             0/1     Pending   0          3m    <none>         <none>
+worker-pool-5b6c7d8-stu88             1/1     Running   2          5h    10.0.2.103     node-4
+ingress-controller-9e8f7d6-mno55      1/1     Running   0          12d   10.0.0.5       node-2
+ingress-controller-9e8f7d6-vwx66      1/1     Running   0          12d   10.0.0.6:8443  node-2
+db-primary-3a2b1c0-jkl11              1/1     Running   0          47d   10.0.3.211     node-5
+
+$ kubectl describe pod worker-pool-5b6c7d8-pqr99 -n production
+Name:           worker-pool-5b6c7d8-pqr99
+Namespace:      production
+Priority:       0
+Service Account: worker-sa
+Node:           <none>
+Labels:         app=worker-pool
+                pod-template-hash=5b6c7d8
+                version=v2.4.1
+Annotations:    trace-id: 7a8b9c0d-e1f2-4a3b-9c4d-5e6f7a8b9c0d
+Status:         Pending
+
+$ docker compose -f docker-compose.dev.yml up -d
+[+] Running 4/4
+ ✔ Container zextract-redis-1     Started                                          0.4s
+ ✔ Container zextract-postgres-1  Started                                          0.5s
+ ✔ Container zextract-api-1       Started                                          0.8s
+ ✔ Container zextract-worker-1    Started                                          1.0s
+
+$ docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+NAMES                  STATUS              PORTS
+zextract-redis-1       Up 12 seconds       127.0.0.1:6379->6379/tcp
+zextract-postgres-1    Up 12 seconds       127.0.0.1:5432->5432/tcp
+zextract-api-1         Up 11 seconds       127.0.0.1:8000->8000/tcp, 127.0.0.1:9090->9090/tcp
+zextract-worker-1      Up 10 seconds       (healthy)
+
+$ npm install --save-dev @types/node typescript
+added 247 packages in 18s, found 0 vulnerabilities
+visit https://docs.npmjs.com/about-audit-reports for details
+audit: 0 vulnerabilities, 0 high, 0 critical
+
+$ npm run lint
+> zextract-cli@0.1.0 lint /Users/stefan.marx/projekte/zextract-stress-test/cli
+> eslint src/
+
+src/app.js:42:8  warning  Unused variable 'config'  no-unused-vars
+src/app.js:78:15 error    Missing semicolon          semi
+src/utils/parse.js:11:5   warning  Unexpected console statement  no-console
+src/index.js:127:18 error    Unexpected `any`  @typescript-eslint/no-explicit-any
+
+$ # ssh out to staging for a quick check
+$ ssh deploy@staging.example.com -p 2222
+Welcome to Ubuntu 22.04.3 LTS (GNU/Linux 6.5.0-21-generic x86_64)
+Last login: Thu May 15 22:14:08 2026 from 192.168.10.55
+
+deploy@staging:~$ cat /etc/hosts | head -5
+127.0.0.1       localhost
+127.0.1.1       staging
+::1             ip6-localhost ip6-loopback
+fe00::0         ip6-mcastprefix
+2001:db8::1     external.staging.example.com
+
+deploy@staging:~$ tail -n 20 /var/log/api/access.log
+[2026-05-16T08:14:22Z] 203.0.113.45 - GET /api/v2/users?limit=50 200 124ms
+[2026-05-16T08:14:23Z] 203.0.113.66 - POST /api/v2/auth/login 401 8ms
+[2026-05-16T08:14:23Z] 203.0.113.45 - GET /api/v2/posts?after=550e8400-e29b-41d4-a716-446655440000 200 318ms
+[2026-05-16T08:14:24Z] 198.51.100.7 - GET /static/assets/main.css 200 12ms
+[2026-05-16T08:14:25Z] 203.0.113.91 - POST /api/v2/uploads multipart 413 5ms
+[2026-05-16T08:14:26Z] [192.168.4.10] - HEAD /healthz 200 1ms
+[2026-05-16T08:14:27Z] 203.0.113.45 - DELETE /api/v2/sessions/8b5a3f2e-c1d2-4e7f-9a8b-0c1d2e3f4a5b 204 22ms
+
+deploy@staging:~$ # show the redacted env loaders
+deploy@staging:~$ grep -i "_token\|_key\|secret" /etc/staging/app.env
+GITHUB_TOKEN=ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789AB
+ANTHROPIC_API_KEY=sk-ant-api03-aBcDeFgHiJkLmNoPqRsTuVwXyZ
+OPENAI_API_KEY=sk-proj-aBcDeFgHiJkLmNoPqRsTuVwXyZ012345
+STRIPE_SECRET=sk_test_aBcDeFgHiJkLmNoPqRsTuVwX
+SLACK_TOKEN=xoxb-123456789-0123456789-abcdefghij
+JWT_SIGNING=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI3In0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U
+
+deploy@staging:~$ exit
+Connection to staging.example.com closed.
+
+$ # back local
+$ git diff --stat HEAD~3
+ src/extract.rs                | 47 +++++++++++++++++++++++++++++--
+ src/pattern/file.rs           | 23 +++++++++++++++-
+ src/pattern/command.rs        | 89 ++++++++++++++++++++++++++++++++++++++--
+ tests/fixtures/realworld.txt  | 12 ++++++++
+ 4 files changed, 159 insertions(+), 14 deletions(-)
+
+$ # try editing a few files in nvim
+$ nvim src/extract.rs +84
+$ nvim src/pattern/command.rs +117
+$ nvim src/main.rs +298
+
+$ cargo test --workspace 2>&1 | tail -8
+running 108 tests
+test extract::tests::cross_type_dedup_keeps_higher_priority ... ok
+test extract::tests::recency_order_latest_first ... ok
+test action::tests::shell_quote_escapes_embedded_single_quote ... ok
+test action::tests::json_array_multiple_matches ... ok
+
+test result: ok. 108 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+$ # links to follow up on
+$ # see https://zellij.dev/documentation/plugin-api-commands.html for plugin API docs
+$ # also https://docs.rs/ratatui/0.29.0/ratatui/buffer/struct.Buffer.html for the buffer reset call
+$ # bug to file: https://github.com/zellij-org/zellij/issues/2518
+
+$ # python REPL session
+$ python3
+Python 3.11.7 (main, Dec 15 2023, 18:12:31) on darwin
+>>> from extractor import Picker
+>>> p = Picker("realworld.txt")
+>>> len(p.matches)
+42
+>>> p.matches[0]
+<Match url 'https://example.com/install.sh'>
+>>> p.json()
+[{"type":"url","raw":"https://example.com/install.sh","scheme":"https"}]
+>>> exit()
+
+$ # one more bug report URL
+$ open https://github.com/codingfragments/zellij-zextract/issues/new?title=stress+test+failed
+
+$ # done for now
+$ history | tail -3
+  998  cargo build --release --target wasm32-wasip1
+  999  cargo test --workspace
+ 1000  history | tail -3

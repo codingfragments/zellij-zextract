@@ -21,6 +21,10 @@ pub enum Verb {
     Edit,
     Reveal,
     Preview,
+    /// Export the current selection (or highlighted row) as a JSON
+    /// array of flat per-match objects to the clipboard. Universal:
+    /// always allowed for every type (planning.md Q21).
+    Json,
 }
 
 impl Verb {
@@ -34,6 +38,7 @@ impl Verb {
             Verb::Edit => "edit",
             Verb::Reveal => "reveal",
             Verb::Preview => "preview",
+            Verb::Json => "json",
         }
     }
 
@@ -49,6 +54,7 @@ impl Verb {
             Verb::Edit => "e",
             Verb::Reveal => "r",
             Verb::Preview => "p",
+            Verb::Json => "J",
         }
     }
 }
@@ -66,6 +72,7 @@ pub fn verb_from_char(c: char) -> Option<Verb> {
         'e' => Some(Verb::Edit),
         'r' => Some(Verb::Reveal),
         'p' => Some(Verb::Preview),
+        'J' => Some(Verb::Json),
         _ => None,
     }
 }
@@ -125,10 +132,11 @@ pub fn default_verb(m: &Match) -> Verb {
     }
 }
 
-/// True if the verb may fire for the given match. CopyRaw is always
-/// allowed (per planning.md Q8). Secrets hardcoded-deny Open/Edit/Reveal.
+/// True if the verb may fire for the given match. CopyRaw and Json
+/// are universally allowed (planning.md Q8 / Q21). Secrets hardcoded-
+/// deny Open/Edit/Reveal.
 pub fn is_verb_allowed(m: &Match, verb: Verb) -> bool {
-    if matches!(verb, Verb::CopyRaw) {
+    if matches!(verb, Verb::CopyRaw | Verb::Json) {
         return true;
     }
     if matches!(m.ty, MatchType::Secret)
@@ -165,6 +173,80 @@ pub fn dispatch(verb: Verb, m: &Match, source_pane: Option<u32>) -> DispatchResu
         Verb::Edit => run_edit(m, source_pane),
         Verb::Reveal => run_reveal(m),
         Verb::Preview => DispatchResult::StayOpen, // Phase 8 wires real preview
+        Verb::Json => {
+            // Single-match J → array of one. Multi-target J in main.rs
+            // calls `matches_to_json_array` directly with N elements.
+            let json = matches_to_json_array(std::slice::from_ref(&m));
+            copy_to_clipboard(&json);
+            DispatchResult::Closed
+        }
+    }
+}
+
+/// Serialize a slice of Match references to a compact, single-line
+/// JSON array. Always returns an array (even for one element) per
+/// planning.md Q21. Universal fields and per-type fields live at the
+/// same level (flat). All values stringified except `span` which is
+/// `[start, end]`. No external serde dep — built by hand so wasm size
+/// stays small.
+pub fn matches_to_json_array(matches: &[&Match]) -> String {
+    let mut out = String::from("[");
+    for (i, m) in matches.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        match_to_json_object(m, &mut out);
+    }
+    out.push(']');
+    out
+}
+
+fn match_to_json_object(m: &Match, out: &mut String) {
+    use std::fmt::Write as _;
+    out.push('{');
+    // Universal fields, deterministic order.
+    push_json_kv(out, "type", m.ty.tag());
+    out.push(',');
+    push_json_kv(out, "raw", &m.raw);
+    out.push(',');
+    push_json_kv(out, "display", &m.display);
+    out.push(',');
+    push_json_kv(out, "context", &m.context);
+    // Span as a numeric pair.
+    out.push(',');
+    let _ = write!(out, r#""span":[{},{}]"#, m.span.0, m.span.1);
+    // Per-type fields, sorted for stable output.
+    let mut keys: Vec<&String> = m.fields.keys().collect();
+    keys.sort();
+    for k in keys {
+        out.push(',');
+        push_json_kv(out, k, &m.fields[k]);
+    }
+    out.push('}');
+}
+
+fn push_json_kv(out: &mut String, key: &str, value: &str) {
+    out.push('"');
+    push_json_escaped(out, key);
+    out.push_str("\":\"");
+    push_json_escaped(out, value);
+    out.push('"');
+}
+
+fn push_json_escaped(out: &mut String, s: &str) {
+    use std::fmt::Write as _;
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
     }
 }
 
@@ -459,7 +541,69 @@ mod tests {
         assert_eq!(verb_from_char('e'), Some(Verb::Edit));
         assert_eq!(verb_from_char('i'), Some(Verb::Insert));
         assert_eq!(verb_from_char('I'), Some(Verb::InsertDisplay));
+        assert_eq!(verb_from_char('J'), Some(Verb::Json));
         assert_eq!(verb_from_char('z'), None);
+    }
+
+    #[test]
+    fn json_always_allowed() {
+        // Json is universally allowed for every type, including secret
+        // (you should be able to export secret tokens as JSON the same
+        // way you can copy them — the safety boundary is "don't open"
+        // not "don't expose value at all").
+        for ty in [
+            MatchType::Url, MatchType::File, MatchType::Diagnostic,
+            MatchType::Sha, MatchType::Ipv4, MatchType::Ipv6,
+            MatchType::Uuid, MatchType::QuotedString, MatchType::Command,
+            MatchType::Secret,
+        ] {
+            assert!(is_verb_allowed(&empty_match(ty), Verb::Json), "{ty:?}");
+        }
+    }
+
+    #[test]
+    fn json_array_single_match() {
+        let m = url_match();
+        let arr = matches_to_json_array(&[&m]);
+        assert!(arr.starts_with('['));
+        assert!(arr.ends_with(']'));
+        // Single-element array still wrapped — planning.md Q21.
+        assert!(arr.contains(r#""type":"url""#));
+        assert!(arr.contains(r#""url":"https://example.com""#));
+        assert!(arr.contains(r#""scheme":"https""#));
+    }
+
+    #[test]
+    fn json_array_multiple_matches() {
+        let arr = matches_to_json_array(&[&url_match(), &file_match()]);
+        // Two objects, comma-joined.
+        assert!(arr.starts_with(r#"[{"type":"url""#));
+        assert!(arr.contains(r#"},{"type":"file""#));
+    }
+
+    #[test]
+    fn json_string_escapes_quotes_and_newlines() {
+        let mut m = empty_match(MatchType::Url);
+        m.raw = "with \"quote\" and\nnewline".to_string();
+        m.display = m.raw.clone();
+        let arr = matches_to_json_array(&[&m]);
+        assert!(arr.contains(r#"\"quote\""#));
+        assert!(arr.contains(r#"\n"#));
+    }
+
+    #[test]
+    fn json_compact_no_whitespace_padding() {
+        let arr = matches_to_json_array(&[&url_match()]);
+        // No ": " spacing, no newlines, no indents.
+        assert!(!arr.contains(": "));
+        assert!(!arr.contains('\n'));
+    }
+
+    #[test]
+    fn json_span_is_a_numeric_pair() {
+        let arr = matches_to_json_array(&[&url_match()]);
+        // url_match() span is (4, 23).
+        assert!(arr.contains(r#""span":[4,23]"#));
     }
 
     #[test]
