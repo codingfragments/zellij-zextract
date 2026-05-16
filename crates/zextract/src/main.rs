@@ -941,10 +941,13 @@ impl State {
         // change at the call site (extend the slice). Cache the result
         // so the renderer can show active filter pills without
         // re-parsing every frame.
-        let tags: Vec<&str> = extract::TYPE_PRIORITY
+        let mut tags: Vec<&str> = extract::TYPE_PRIORITY
             .iter()
             .map(|t| t.tag())
             .collect();
+        for cp in &self.config.patterns.custom {
+            tags.push(&cp.name);
+        }
         self.parsed_query = query::parse_query(&self.query, &tags);
         let parsed = &self.parsed_query;
 
