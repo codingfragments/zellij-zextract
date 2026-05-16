@@ -207,7 +207,7 @@ pub fn dispatch(
     verb: Verb,
     m: &Match,
     source_pane: Option<u32>,
-    editor_fallback: &str,
+    editor_cmd: &str,
     types: &TypesConfig,
 ) -> DispatchResult {
     if !is_verb_allowed(m, verb, types) {
@@ -225,7 +225,7 @@ pub fn dispatch(
         Verb::Insert => insert_text(&m.raw, source_pane),
         Verb::InsertDisplay => insert_text(&m.display, source_pane),
         Verb::Open => run_open(m),
-        Verb::Edit => run_edit(m, source_pane, editor_fallback),
+        Verb::Edit => run_edit(m, source_pane, editor_cmd),
         Verb::Reveal => run_reveal(m),
         Verb::Preview => DispatchResult::StayOpen, // Phase 8 wires real preview
         Verb::Json => {
@@ -238,13 +238,27 @@ pub fn dispatch(
     }
 }
 
-/// Resolve the editor command. `$EDITOR` wins when set (matches standard
-/// CLI tool behavior — `git`, `crontab`, etc.); falls back to the
-/// user-configured `editor_command_prefix` from `zextract.kdl`, which
-/// itself defaults to `nvim`. Exposed for the multi-target edit path
-/// in main.rs to share the same resolution logic.
-pub fn resolve_editor(fallback: &str) -> String {
-    std::env::var("EDITOR").unwrap_or_else(|_| fallback.to_string())
+/// Resolve the editor command. The config value (`editor_command_prefix`)
+/// is authoritative — explicit user config beats an ambient env var.
+/// Falls back to `$EDITOR` only when config is at its default (`nvim`),
+/// i.e. the user hasn't touched `editor_command_prefix` at all.
+/// If neither is set, returns `"nvim"`.
+///
+/// Rationale for config-wins: this is a GUI-adjacent picker plugin, not
+/// a CLI tool launched from the shell. `$EDITOR` in the Zellij WASI
+/// sandbox may not even match the user's shell `$EDITOR`. An explicit
+/// `editor_command_prefix "hx"` in the config file is unambiguous intent
+/// and should not be silently overridden by a shell env var.
+pub fn resolve_editor(configured: &str) -> String {
+    const DEFAULT: &str = "nvim";
+    if configured != DEFAULT {
+        // User has explicitly set a non-default value — honour it.
+        return configured.to_string();
+    }
+    // Config is at default — maybe the user hasn't configured yet.
+    // Check $EDITOR so zextract works out-of-the-box for people whose
+    // EDITOR is set to something other than nvim.
+    std::env::var("EDITOR").unwrap_or_else(|_| DEFAULT.to_string())
 }
 
 /// Serialize a slice of Match references to a compact, single-line
@@ -360,19 +374,19 @@ fn run_open(m: &Match) -> DispatchResult {
 /// (`actions { url { edit command "code -g {file}:{line}" } }` once
 /// per-type templates land).
 ///
-/// Editor resolution: `resolve_editor` — `$EDITOR` env var wins,
-/// otherwise the `editor_command_prefix` from config (default `nvim`).
+/// Editor resolution: `resolve_editor` — config wins when explicitly set;
+/// falls back to `$EDITOR` only when config is still at its default.
 ///
 /// Path quoting: applied only when the path contains characters that
 /// would be re-interpreted by the shell (spaces, `$`, backticks, etc.).
 /// Single-quoted with embedded `'` escaped as `'\''` — standard POSIX.
-fn run_edit(m: &Match, source_pane: Option<u32>, editor_fallback: &str) -> DispatchResult {
+fn run_edit(m: &Match, source_pane: Option<u32>, editor_cmd: &str) -> DispatchResult {
     let Some(pane_id) = source_pane else {
         return DispatchResult::Rejected;
     };
     let file = m.fields.get("file").map(|s| s.as_str()).unwrap_or(&m.raw);
     let line = m.fields.get("line").map(|s| s.as_str()).unwrap_or("");
-    let editor = resolve_editor(editor_fallback);
+    let editor = resolve_editor(editor_cmd);
     let cmd = if line.is_empty() {
         format!("{} {}", editor, shell_quote(file))
     } else {
