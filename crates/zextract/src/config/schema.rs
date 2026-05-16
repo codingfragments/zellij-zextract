@@ -393,11 +393,14 @@ pub struct VerbTemplates {
 
 /// Parse an `actions { url { open command "..." } }` block.
 ///
-/// Each child is a per-type node whose name is the type tag. Inside
-/// each type node, the recognised keys are `open`, `edit`, `reveal`,
-/// each in the form `<verb> command "<template>"`. The keyword
-/// `command` is required — it reserves space for future verb forms
-/// (`command-insert`, `script`, etc.) without a breaking change.
+/// Each child is a per-type node whose name is the **type tag** (the
+/// short form returned by `MatchType::tag()`):
+///   url, file, diag, sha, ipv4, ipv6, uuid, quote, cmd, secret
+///
+/// Inside each type node, the recognised keys are `open`, `edit`,
+/// `reveal`, each in the form `<verb> command "<template>"`. The
+/// keyword `command` is required — it reserves space for future verb
+/// forms (`command-insert`, `script`, etc.) without a breaking change.
 fn parse_actions_block(nodes: &[Node], actions: &mut ActionsConfig) {
     for type_node in nodes {
         let tag = type_node.name.clone();
