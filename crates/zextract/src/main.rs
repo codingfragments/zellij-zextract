@@ -343,17 +343,168 @@ impl State {
     }
 
     fn fire_default_action(&mut self) -> bool {
+        // Default is determined by the highlighted row's type; multi-
+        // select then routes that verb through `fire_verb` which
+        // operates on `effective_targets`.
         let Some(m) = self.current_match().cloned() else {
             return false;
         };
-        self.fire_verb_on_match(action::default_verb(&m), &m)
+        self.fire_verb(action::default_verb(&m))
     }
 
     fn fire_verb(&mut self, verb: Verb) -> bool {
-        let Some(m) = self.current_match().cloned() else {
+        // Preview is a UI-state toggle, short-circuit before the
+        // selection/cap machinery.
+        if matches!(verb, Verb::Preview) {
+            self.toggle_preview();
+            return true;
+        }
+        let targets = self.effective_targets();
+        if targets.is_empty() {
             return false;
-        };
-        self.fire_verb_on_match(verb, &m)
+        }
+        self.dispatch_verb_on_targets(verb, &targets)
+    }
+
+    /// Apply `verb` to every Match index in `targets`. Semantics
+    /// (planning.md Q24):
+    ///
+    /// 1. **Silent-permissive type-mismatch**: skip targets whose type
+    ///    doesn't allow the verb (CopyRaw is universally allowed; secret
+    ///    hardcoded-denies open/edit/reveal; etc.). No status message —
+    ///    user sees only the side effect of the rows that did fire.
+    /// 2. **Loud-reject if zero allowed**: status message, picker stays
+    ///    open. Lets the user re-pick.
+    /// 3. **Per-verb cap**: if N allowed > cap, refuse loudly (no
+    ///    partial fire). User narrows the selection.
+    /// 4. **Single-target path**: delegate to `fire_verb_on_match` for
+    ///    full per-row semantics (line-aware edit command, etc.).
+    /// 5. **Multi-target path**:
+    ///      - copy[raw|display] → join all by `\n`, ONE clipboard write
+    ///      - insert[raw|display] → join all by space (avoid accidental
+    ///        shell-exec from embedded newlines), ONE write_chars
+    ///      - open/reveal → N independent invocations
+    ///      - edit → one combined `$EDITOR file1 file2 …` command
+    ///        (per-file `+line` is dropped — only makes sense for the
+    ///        single-file case)
+    fn dispatch_verb_on_targets(&mut self, verb: Verb, targets: &[usize]) -> bool {
+        let allowed: Vec<usize> = targets
+            .iter()
+            .filter(|&&i| {
+                self.matches
+                    .get(i)
+                    .map(|m| action::is_verb_allowed(m, verb))
+                    .unwrap_or(false)
+            })
+            .copied()
+            .collect();
+
+        if allowed.is_empty() {
+            let sample = targets
+                .first()
+                .and_then(|&i| self.matches.get(i))
+                .map(|m| m.ty.tag())
+                .unwrap_or("selection");
+            self.message = Some(format!(
+                "'{}' not available for [{}]",
+                verb.label(),
+                sample
+            ));
+            return true;
+        }
+
+        let cap = cap_for_verb(verb);
+        if allowed.len() > cap {
+            self.message = Some(format!(
+                "Refused: {} matches exceeds cap of {} for '{}'",
+                allowed.len(),
+                cap,
+                verb.label()
+            ));
+            return true;
+        }
+
+        // Single-target → reuse the existing per-row dispatch path
+        // (preserves edit's +line behavior, action.rs's logging, etc.).
+        if allowed.len() == 1 {
+            let Some(m) = self.matches.get(allowed[0]).cloned() else {
+                return false;
+            };
+            return self.fire_verb_on_match(verb, &m);
+        }
+
+        // Multi-target paths.
+        match verb {
+            Verb::CopyRaw | Verb::CopyDisplay => {
+                let pieces: Vec<String> = allowed
+                    .iter()
+                    .filter_map(|&i| self.matches.get(i))
+                    .map(|m| {
+                        if matches!(verb, Verb::CopyDisplay) {
+                            m.display.clone()
+                        } else {
+                            m.raw.clone()
+                        }
+                    })
+                    .collect();
+                copy_to_clipboard(&pieces.join("\n"));
+                close_self();
+                false
+            }
+            Verb::Insert | Verb::InsertDisplay => {
+                let Some(pane_id) = self.source_pane else {
+                    self.message = Some("insert: no source pane".into());
+                    return true;
+                };
+                let pieces: Vec<String> = allowed
+                    .iter()
+                    .filter_map(|&i| self.matches.get(i))
+                    .map(|m| {
+                        if matches!(verb, Verb::InsertDisplay) {
+                            m.display.clone()
+                        } else {
+                            m.raw.clone()
+                        }
+                    })
+                    .collect();
+                write_chars_to_pane_id(&pieces.join(" "), PaneId::Terminal(pane_id));
+                close_self();
+                false
+            }
+            Verb::Open | Verb::Reveal => {
+                for &i in &allowed {
+                    if let Some(m) = self.matches.get(i).cloned() {
+                        action::dispatch(verb, &m, self.source_pane);
+                    }
+                }
+                close_self();
+                false
+            }
+            Verb::Edit => {
+                let Some(pane_id) = self.source_pane else {
+                    self.message = Some("edit: no source pane".into());
+                    return true;
+                };
+                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".into());
+                let files: Vec<String> = allowed
+                    .iter()
+                    .filter_map(|&i| self.matches.get(i))
+                    .map(|m| {
+                        let f = m
+                            .fields
+                            .get("file")
+                            .map(|s| s.as_str())
+                            .unwrap_or(&m.raw);
+                        action::shell_quote(f)
+                    })
+                    .collect();
+                let cmd = format!("{} {}", editor, files.join(" "));
+                write_chars_to_pane_id(&cmd, PaneId::Terminal(pane_id));
+                close_self();
+                false
+            }
+            Verb::Preview => unreachable!("Preview short-circuited above"),
+        }
     }
 
     fn fire_verb_on_match(&mut self, verb: Verb, m: &Match) -> bool {
@@ -785,6 +936,23 @@ fn highlight_spans(display: &str, indices: &[u32]) -> Vec<Span<'static>> {
         spans.push(Span::styled(current, style));
     }
     spans
+}
+
+/// Per-verb cap on multi-target dispatch. Conservative defaults — the
+/// idea is to avoid foot-guns (opening 200 browser tabs by accident,
+/// pasting a 50-row wall of text into the prompt).
+///
+/// Phase 7 KDL config will expose these as `limits { copy insert open
+/// command json }`. Numbers come from planning.md Q24.
+fn cap_for_verb(verb: Verb) -> usize {
+    match verb {
+        Verb::CopyRaw | Verb::CopyDisplay => 100,
+        Verb::Insert | Verb::InsertDisplay => 5,
+        Verb::Open => 10,
+        Verb::Edit => 5,
+        Verb::Reveal => 10,
+        Verb::Preview => usize::MAX,
+    }
 }
 
 /// Compute the 0-based line index of a byte offset within `text`.
