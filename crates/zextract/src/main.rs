@@ -162,22 +162,36 @@ impl Default for State {
 register_plugin!(State);
 
 impl ZellijPlugin for State {
-    fn load(&mut self, _configuration: BTreeMap<String, String>) {
+    fn load(&mut self, configuration: BTreeMap<String, String>) {
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
             PermissionType::ReadPaneContents,
             PermissionType::WriteToClipboard,
-            // Phase 4:
-            PermissionType::RunCommands,    // open / edit / reveal actions
-            PermissionType::WriteToStdin,   // insert action (write_chars_to_pane_id)
-            // Phase 7 probe: attempt to read ~/.config/zellij/zextract.kdl
-            // from inside the WASI sandbox. Whether this works tells us
-            // which config-loading path to commit to (Option A direct
-            // read vs Option B configuration-map vs Option C run_command
-            // shell-out). See probe_config_read() below.
+            PermissionType::RunCommands,
+            PermissionType::WriteToStdin,
             PermissionType::FullHdAccess,
         ]);
+
+        // `type "url"` or `type "url jira"` in the keybind configuration
+        // map pre-fills the query with the corresponding `#type` tokens:
+        //
+        //   bind "Alt u" { LaunchOrFocusPlugin "zextract.wasm" { type "url"; }; }
+        //
+        // The picker opens with the filter already active, same as if the
+        // user had typed `#url`. Backspaceable like any other query text.
+        if let Some(type_val) = configuration.get("type") {
+            let prefilled: String = type_val
+                .split_whitespace()
+                .map(|t| format!("#{t}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !prefilled.is_empty() {
+                self.query = prefilled;
+                // parsed_query will be resolved in refilter() once
+                // the known-tag set is available after extraction.
+            }
+        }
 
         let ids = get_plugin_ids();
         plog!(
