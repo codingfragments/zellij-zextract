@@ -999,9 +999,18 @@ impl State {
     }
 
     fn render_input(&self, area: Rect, buf: &mut Buffer) {
-        // Grab-profile label to the right of the input box. Width is the
-        // longest profile name + 4 chars padding. `viewport` (8) + 4 = 12.
-        let grab_label_width: u16 = 12;
+        // Grab-profile label width: brackets + name + 1 space each side.
+        // Computed from the longest name in the current profile list so
+        // the box doesn't shift when cycling.
+        let max_name = self
+            .config
+            .grab
+            .profiles
+            .iter()
+            .map(|p| p.name.len())
+            .max()
+            .unwrap_or(5);
+        let grab_label_width = (max_name + 4) as u16; // [name] + 2 spaces
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -1079,17 +1088,13 @@ impl State {
             .block(Block::default().borders(Borders::ALL).title("zextract"))
             .render(chunks[0], buf);
 
-        // Grab-profile label: vertically centered in the 3-row strip
-        // (row 0 = top border height, row 1 = content, row 2 = bottom).
-        // Shows the active profile name; `g` in List mode cycles it.
+        // Grab-profile label: vertically centered, normal text color,
+        // bracketed. `g` in List mode cycles it.
         if let Some(p) = self.config.grab.profiles.get(self.current_grab_profile_index) {
-            let label = format!(" {} ", p.name);
-            let label_style = Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD);
+            let label = format!("[{}]", p.name);
             Paragraph::new(vec![
                 Line::from(""),
-                Line::from(Span::styled(label, label_style)),
+                Line::from(Span::styled(label, Style::default())),
                 Line::from(""),
             ])
             .alignment(ratatui::layout::Alignment::Center)
