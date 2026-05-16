@@ -26,6 +26,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Sta
 use zellij_tile::prelude::*;
 
 use crate::action::{DispatchResult, Verb};
+use crate::config::Config;
 use crate::extract::{Match, MatchType};
 use crate::fuzzy::{FuzzyEngine, ScoredMatch};
 use crate::query::ParsedQuery;
@@ -44,6 +45,25 @@ enum Mode {
 }
 
 struct State {
+    /// Loaded user config or defaults. Replaced once after plugin
+    /// load completes the host-folder handshake (see HostFolderChanged
+    /// event handler). Until then, all Phase 7-plumbed settings read
+    /// from `Config::default()`. Phase 7's later commits read fields
+    /// from here in place of today's hardcoded constants.
+    ///
+    /// **Timing caveat for config-driven extraction settings:**
+    /// today the extraction kicks off on the first `PaneUpdate` (which
+    /// usually arrives before `HostFolderChanged`), so the FIRST
+    /// extraction uses defaults regardless of what's in the config
+    /// file. Settings that don't affect extraction (UI widths, action
+    /// templates, limits, editor_command_prefix) take effect on first
+    /// render after `HostFolderChanged` — fine. Settings that DO
+    /// affect extraction (`grab.recent_lines`, custom `patterns.*`
+    /// blocks) need a re-extract once config lands — that wiring is
+    /// owed to commit 5 (grab) and commit 8 (custom patterns). Track
+    /// `config_loaded: bool` on State and gate extraction or re-trigger
+    /// it from the HostFolderChanged handler.
+    config: Config,
     matches: Vec<Match>,
     /// The text we extracted from — retained so the preview pane can
     /// render surrounding lines for any selected match. Costs ~12 KB
@@ -88,6 +108,7 @@ impl Default for State {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         Self {
+            config: Config::default(),
             matches: Vec::new(),
             captured_text: String::new(),
             query: String::new(),
@@ -116,9 +137,15 @@ impl ZellijPlugin for State {
             PermissionType::ChangeApplicationState,
             PermissionType::ReadPaneContents,
             PermissionType::WriteToClipboard,
-            // New for Phase 4:
+            // Phase 4:
             PermissionType::RunCommands,    // open / edit / reveal actions
             PermissionType::WriteToStdin,   // insert action (write_chars_to_pane_id)
+            // Phase 7 probe: attempt to read ~/.config/zellij/zextract.kdl
+            // from inside the WASI sandbox. Whether this works tells us
+            // which config-loading path to commit to (Option A direct
+            // read vs Option B configuration-map vs Option C run_command
+            // shell-out). See probe_config_read() below.
+            PermissionType::FullHdAccess,
         ]);
 
         let ids = get_plugin_ids();
@@ -128,17 +155,46 @@ impl ZellijPlugin for State {
             ids.initial_cwd.display().to_string(),
         );
         self.own_plugin_id = ids.plugin_id;
+        // The probe runs from the PermissionRequestResult handler —
+        // calling change_host_folder before the runtime registers the
+        // grant produces "permission denied" even when the cache
+        // shows FullHdAccess granted.
         subscribe(&[
             EventType::Key,
             EventType::PaneUpdate,
             EventType::PermissionRequestResult,
+            // Phase 7 probe: change_host_folder is async; these events
+            // signal completion / failure.
+            EventType::HostFolderChanged,
+            EventType::FailedToChangeHostFolder,
         ]);
     }
 
     fn update(&mut self, event: Event) -> bool {
         match event {
             Event::PermissionRequestResult(_) => {
+                // Permissions just landed — kick the async two-step
+                // config load: (1) request /host to repoint to $HOME,
+                // (2) read once HostFolderChanged confirms the swap.
+                request_host_change_for_config_load();
                 self.try_extract();
+                true
+            }
+            Event::HostFolderChanged(new_path) => {
+                eprintln!(
+                    "[zextract] HostFolderChanged: /host -> {:?}",
+                    new_path.display().to_string()
+                );
+                self.load_config_from_host();
+                true
+            }
+            Event::FailedToChangeHostFolder(err) => {
+                eprintln!(
+                    "[zextract] FailedToChangeHostFolder: err={err:?}. \
+                     Falling back to defaults."
+                );
+                // self.config stays at Config::default() — load_config
+                // would have done the same on a read failure.
                 true
             }
             Event::PaneUpdate(manifest) => {
@@ -210,6 +266,49 @@ impl ZellijPlugin for State {
 }
 
 impl State {
+    /// Step 2 of the async config load. Called once `HostFolderChanged`
+    /// confirms `/host` now points at `$HOME`. Reads
+    /// `/host/.config/zellij/zextract.kdl`, parses to AST, converts to
+    /// typed `Config`, and replaces `self.config`. On any failure,
+    /// `self.config` stays at its current value (Config::default() if
+    /// this is the first call). Parse errors will surface to the user
+    /// via a banner in a later commit; for now we log and degrade.
+    fn load_config_from_host(&mut self) {
+        let path = "/host/.config/zellij/zextract.kdl";
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!(
+                    "[zextract] config load: no file at {path:?} — using defaults"
+                );
+                return;
+            }
+            Err(e) => {
+                eprintln!(
+                    "[zextract] config load: read err path={path:?} \
+                     kind={:?} err={e} — using defaults",
+                    e.kind()
+                );
+                return;
+            }
+        };
+        match config::parse::parse(&text) {
+            Ok(nodes) => {
+                self.config = Config::from_ast(&nodes);
+                eprintln!(
+                    "[zextract] config load: OK ({} bytes, {} top-level nodes)",
+                    text.len(),
+                    nodes.len(),
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[zextract] config load: parse err {e} — using defaults"
+                );
+            }
+        }
+    }
+
     fn try_extract(&mut self) {
         if self.extraction_done {
             return;
@@ -1063,6 +1162,28 @@ fn highlight_spans(display: &str, indices: &[u32]) -> Vec<Span<'static>> {
         spans.push(Span::styled(current, style));
     }
     spans
+}
+
+/// Step 1 of the async config load — request that the WASI sandbox's
+/// `/host` preopen repoints to the user's home directory. Called
+/// from `Event::PermissionRequestResult` so we know FullHdAccess has
+/// landed. The actual read fires from `State::load_config_from_host`
+/// on the subsequent `Event::HostFolderChanged`.
+///
+/// Why this dance: the WASI sandbox only preopens `/host`, `/data`,
+/// `/tmp`. Reading the user's `~/.config/zellij/zextract.kdl` requires
+/// reaching `/host/.config/zellij/zextract.kdl` after `/host` has been
+/// repointed at `$HOME`. See planning.md Phase 7 for the rationale.
+fn request_host_change_for_config_load() {
+    let home = match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() => h,
+        _ => {
+            eprintln!("[zextract] config load: no $HOME — using defaults");
+            return;
+        }
+    };
+    eprintln!("[zextract] config load: change_host_folder -> {home:?}");
+    change_host_folder(std::path::PathBuf::from(&home));
 }
 
 /// Per-verb cap on multi-target dispatch. Conservative defaults — the

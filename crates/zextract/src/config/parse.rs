@@ -18,6 +18,9 @@ pub enum Value {
 }
 
 impl Value {
+    // Typed accessors — used by `schema::Config::from_ast` once
+    // section parsing lands (commits 4+).
+    #[allow(dead_code)]
     /// Convenience: extract a string-like representation. Strings and
     /// idents return their inner text; numbers and booleans format.
     pub fn as_str_lossy(&self) -> String {
@@ -28,6 +31,7 @@ impl Value {
         }
     }
 
+    #[allow(dead_code)]
     pub fn as_string(&self) -> Option<&str> {
         match self {
             Value::String(s) | Value::Ident(s) => Some(s),
@@ -35,6 +39,7 @@ impl Value {
         }
     }
 
+    #[allow(dead_code)]
     pub fn as_int(&self) -> Option<i64> {
         if let Value::Integer(n) = self {
             Some(*n)
@@ -43,6 +48,7 @@ impl Value {
         }
     }
 
+    #[allow(dead_code)]
     pub fn as_bool(&self) -> Option<bool> {
         if let Value::Boolean(b) = self {
             Some(*b)
