@@ -503,6 +503,16 @@ impl State {
                 close_self();
                 false
             }
+            Verb::Json => {
+                let refs: Vec<&Match> = allowed
+                    .iter()
+                    .filter_map(|&i| self.matches.get(i))
+                    .collect();
+                let json = action::matches_to_json_array(&refs);
+                copy_to_clipboard(&json);
+                close_self();
+                false
+            }
             Verb::Preview => unreachable!("Preview short-circuited above"),
         }
     }
@@ -849,12 +859,16 @@ impl State {
                     line1.push(Span::styled(verb.key_label(), bold));
                     line1.push(Span::raw(format!(":{}  ", verb.label())));
                 }
-                // Preview key — universal in List mode, always show.
+                // Universal-in-List-mode keys (work for every type).
                 line1.push(Span::styled("p", bold));
                 line1.push(Span::raw(format!(
                     ":{}  ",
                     if self.preview_open { "preview-off" } else { "preview-on" }
                 )));
+                line1.push(Span::styled("J", bold));
+                line1.push(Span::raw(":json  "));
+                line1.push(Span::styled("Space", bold));
+                line1.push(Span::raw(":select  "));
             }
         } else {
             line1.push(Span::raw(" "));
@@ -951,6 +965,7 @@ fn cap_for_verb(verb: Verb) -> usize {
         Verb::Open => 10,
         Verb::Edit => 5,
         Verb::Reveal => 10,
+        Verb::Json => 100,
         Verb::Preview => usize::MAX,
     }
 }
