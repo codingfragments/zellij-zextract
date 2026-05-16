@@ -11,17 +11,10 @@ Format: short bullet per item, dated, with file pointer when known.
 ## Open
 
 - **(2026-05-16) Mouse click on grab indicator should cycle profiles.**
-  The `grab:quick` dim indicator in the input strip is visible but not
-  clickable. zellij-tile 0.44.3 has no `EventType::Mouse` for plugins.
-  When Zellij adds plugin mouse events, wire a left-click in the input
-  strip area to `cycle_grab_profile()`.
-
-- **(2026-05-16) Preview on/off footer indicator obsolete.** The footer
-  shows `p:preview-on` / `p:preview-off` reflecting `state.preview_open`.
-  Now that `Ctrl-P` works universally and the preview pane is visually
-  unmistakable when open, the on/off label is redundant. The `p` hint
-  is enough. Drop the `-on`/`-off` suffix; show just `p:preview`.
-  File: `crates/zextract/src/main.rs::render_footer`.
+  The `[quick]` label outside the input box is visible but not clickable.
+  zellij-tile 0.44.3 has no `EventType::Mouse` for plugins.
+  When Zellij adds plugin mouse events, wire a left-click in the grab
+  label column to `cycle_grab_profile()`.
 
 ## How to add an item
 
@@ -38,4 +31,6 @@ the commit hash that fixed it.
 
 ## Resolved
 
-(none yet)
+- **(2026-05-16) Preview on/off footer indicator obsolete.** Fixed in
+  Phase 11 (this session) — footer now shows `p:preview` without the
+  redundant `-on`/`-off` suffix.

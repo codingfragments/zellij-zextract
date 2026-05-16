@@ -1547,23 +1547,27 @@ impl State {
             // Only show action keys in List mode; in Input mode all those
             // letters go into the query, not actions.
             if matches!(self.mode, Mode::List) {
+                let n_targets = self.effective_targets().len();
                 for verb in action::allowed_verbs(m, &self.config.types) {
                     if verb == default {
                         continue; // Already shown as Enter:label.
                     }
-                    line1.push(Span::styled(verb.key_label(), bold));
+                    // Dim the key hint when the current selection count
+                    // exceeds the verb's cap — pressing it will be refused.
+                    let cap = cap_for_verb(verb, &self.config.limits);
+                    let key_style = if n_targets > cap {
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::DIM)
+                    } else {
+                        bold
+                    };
+                    line1.push(Span::styled(verb.key_label(), key_style));
                     line1.push(Span::raw(format!(":{}  ", verb.label())));
                 }
                 // Universal-in-List-mode keys (work for every type).
                 line1.push(Span::styled("p", bold));
-                line1.push(Span::raw(format!(
-                    ":{}  ",
-                    if self.preview_open {
-                        "preview-off"
-                    } else {
-                        "preview-on"
-                    }
-                )));
+                line1.push(Span::raw(":preview  "));
                 line1.push(Span::styled("J", bold));
                 line1.push(Span::raw(":json  "));
                 line1.push(Span::styled("Space", bold));

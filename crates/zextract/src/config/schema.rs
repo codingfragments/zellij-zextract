@@ -11,12 +11,6 @@
 //! source code that today acts as a default eventually moves into
 //! one of these fields.
 
-// The whole schema is intentional "API surface" — fields exist for
-// later commits to read in place of today's hardcoded constants.
-// Some get consumed in commit 4 (UI), some in 5 (grab), some in 6
-// (limits/editor/log_level). Suppressing per-commit until they wire.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use crate::config::parse::Node;

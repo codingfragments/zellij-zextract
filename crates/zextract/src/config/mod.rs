@@ -5,11 +5,10 @@
 //!   - `parse.rs` — tokenizer + recursive-descent parser producing
 //!     a generic AST (`Node` + `Value`). No knowledge of the zextract
 //!     schema. Tests cover KDL surface we accept.
-//!   - `schema.rs` (later commit) — typed `Config` struct, defaults,
-//!     and `Config::from_ast(&[Node])` conversion. Domain validation
-//!     lives here.
-//!   - `load.rs` (later commit) — file I/O, path resolution, error
-//!     formatting for the banner UI.
+//!   - `schema.rs` — typed `Config` struct, defaults, and
+//!     `Config::from_ast(&[Node])` conversion. Domain validation lives here.
+//!   - File I/O and error formatting live in `main.rs::load_config_from_host`
+//!     and `main.rs::render_banner` respectively.
 //!
 //! The parser is a hand-rolled subset of KDL — chosen over the full
 //! `kdl` crate because:
@@ -46,11 +45,4 @@ pub mod schema;
 
 pub use schema::Config;
 pub use schema::{should_log, ActionsConfig, LogLevel, PatternsConfig, TypesConfig};
-// Re-exports kept available for upcoming commits that read these
-// values out of Config; `allow(unused_imports)` keeps the build
-// clean until those commits land.
-#[allow(unused_imports)]
-pub use schema::{
-    CustomPattern, GrabProfile, GrabSource, LimitsConfig, PreviewDefault, TypeOverride, UiConfig,
-    VerbTemplates,
-};
+pub use schema::{GrabSource, LimitsConfig, PreviewDefault};
