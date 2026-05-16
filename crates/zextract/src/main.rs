@@ -7,6 +7,7 @@
 //! See planning.md Phase 4 for acceptance criteria.
 
 mod action;
+mod config;
 mod extract;
 mod fuzzy;
 mod pattern;
