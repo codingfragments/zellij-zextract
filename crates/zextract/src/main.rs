@@ -278,7 +278,8 @@ impl ZellijPlugin for State {
             ids.initial_cwd.display().to_string(),
         );
         self.own_plugin_id = ids.plugin_id;
-        rename_plugin_pane(ids.plugin_id, &self.pane_title);
+        // rename_plugin_pane requires ChangeApplicationState — called
+        // from PermissionRequestResult once the grant is active.
         // The probe runs from the PermissionRequestResult handler —
         // calling change_host_folder before the runtime registers the
         // grant produces "permission denied" even when the cache
@@ -297,12 +298,10 @@ impl ZellijPlugin for State {
     fn update(&mut self, event: Event) -> bool {
         match event {
             Event::PermissionRequestResult(_) => {
-                // Permissions just landed — kick the async two-step
-                // config load: (1) request /host to repoint to $HOME,
-                // (2) read once HostFolderChanged confirms the swap.
-                // If $HOME is missing the async chain never starts, so
-                // mark config_loaded synchronously so the placeholder
-                // clears.
+                // Permissions just landed — set pane title now that
+                // ChangeApplicationState is active.
+                rename_plugin_pane(self.own_plugin_id, &self.pane_title);
+                // Kick the async two-step config load.
                 if !self.request_host_change_for_config_load() {
                     self.config_loaded = true;
                 }
