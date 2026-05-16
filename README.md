@@ -7,6 +7,12 @@ A [Zellij](https://zellij.dev) plugin that extracts typed matches from your focu
 
 Fills the gap left by tmux tools like `extrakto`, `fingers`, and `fzf-links` for Zellij users.
 
+**Documentation:**
+[Built-in types](docs/types.md) ·
+[Config reference](docs/config-reference.md) ·
+[Customization guide](docs/customization.md) ·
+[Use cases](docs/use-cases.md)
+
 ---
 
 ## What it does
@@ -136,11 +142,23 @@ Navigate with `↑`/`↓`. Single-letter keys fire actions on the highlighted ma
 
 `Space` marks rows. Verb keys act on all marked rows at once, up to per-verb caps (configurable in `limits { }`). Multi-target edit chains commands with ` && `.
 
+### Banners
+
+| Banner | Cause | Keys |
+|---|---|---|
+| Yellow — "No config file found" | First launch | `Ctrl-W` write defaults, `Ctrl-X` dismiss |
+| Yellow — "Config parse error …" | Syntax error in `zextract.kdl` | `Ctrl-X` dismiss |
+| Yellow — "Source pane closed" | Source pane closed mid-session | `Ctrl-X` dismiss; copy/JSON still work |
+
 ---
 
 ## Configuration
 
 On first launch with no config file, the picker shows a banner offering `Ctrl-W` to write a default `~/.config/zellij/zextract.kdl`.
+
+See the full [config reference](docs/config-reference.md) for every key, type, default, and example.
+
+For customization walkthroughs (custom editor, JIRA patterns, GitHub PR patterns) see the [customization guide](docs/customization.md).
 
 Full example with all sections:
 
