@@ -10,6 +10,31 @@ Versioning follows [Semantic Versioning](https://semver.org/) (pre-1.0: minor bu
 
 ---
 
+## [0.1.1] — 2026-05-17
+
+### Added
+- **Pane title** — floating pane shows `zextract` by default; override per keybind with `popupTitle "My Picker"` in the `LaunchOrFocusPlugin` configuration block (`name` and `title` are consumed by Zellij before reaching the plugin — use `popupTitle`).
+- **Status message auto-dismiss** — transient messages (cap exceeded, insert failed, etc.) now clear automatically after 3 seconds via `Event::Timer`, in addition to clearing on the next keypress.
+- **Documentation** — `docs/` directory with per-type reference, complete config key reference table, customization guide with worked examples, and use-case walkthroughs.
+- **v2 design brief** in `planning.md` — 4 locked decisions + 6 scoped ideas ready for the next cycle.
+
+### Changed
+- **File pattern** — bare filenames without a path separator (`Cargo.toml`, `stefan.marx`, `call.json`) no longer match. Requires at least one `/`. Add `./` prefix to force-match.
+- **Preview match highlight** — the matched text is now bold + underlined in the type colour within the preview pane context lines.
+- **Empty state** — "No URLs in pane scrollback" → "No matches in pane scrollback" with a dim `Try Alt-g to widen the grab depth` hint.
+- **Truncation** — URL/file/diag matches middle-truncated in the list; all others end-truncated.
+- **Minimum-size guard** — renders "terminal too small (need ≥60×15)" when the pane is too small.
+- **Source pane disappears** — yellow warning banner shown when the source pane closes mid-session; copy and JSON export remain available.
+- **Footer** — `p:preview-on`/`p:preview-off` simplified to `p:preview`; verb hints dim when selection count exceeds the verb's cap.
+- **Bootstrap config** — Ctrl-W now writes a comprehensive commented config covering all sections, defaults, and example customisations.
+- **CI** — opts into Node.js 24 for GitHub Actions runners.
+
+### Fixed
+- Clippy warnings (`for_kv_map`, `unnecessary_sort_by`, `manual_pattern_char_comparison`, `needless_borrows_for_generic_args`).
+- Rustfmt formatting across all crates.
+
+---
+
 ## [0.1.0] — 2026-05-16
 
 First public release. Full v1 feature set.
