@@ -52,13 +52,56 @@ impl Config {
     /// Parse a typed Config from a list of top-level KDL nodes.
     /// Unrecognized sections are silently ignored (forward-compatible
     /// with users editing a newer schema). Missing sections fall
-    /// back to defaults.
+    /// back to defaults. Unrecognized values within a known section
+    /// are also skipped — never fail the whole load.
     ///
-    /// Per-section parsing is added in later commits — this skeleton
-    /// returns defaults regardless of input. Phase-7 commits 3+ fill
-    /// in `ui`, `grab`, `limits`, etc.
-    pub fn from_ast(_nodes: &[Node]) -> Self {
-        Self::default()
+    /// Per-section parsing lands incrementally; this commit wires
+    /// `ui` only. Upcoming commits add `grab`, `limits`, `actions`,
+    /// `types`, `patterns`, and the top-level scalars.
+    pub fn from_ast(nodes: &[Node]) -> Self {
+        let mut config = Self::default();
+        for node in nodes {
+            match node.name.as_str() {
+                "ui" => parse_ui_block(&node.children, &mut config.ui),
+                // Other sections wired in upcoming commits. Unknown
+                // names ignored for forward-compat.
+                _ => {}
+            }
+        }
+        config
+    }
+}
+
+fn parse_ui_block(nodes: &[Node], ui: &mut UiConfig) {
+    for node in nodes {
+        match node.name.as_str() {
+            "preview" => {
+                if let Some(s) = node.args.first().and_then(|v| v.as_string()) {
+                    ui.preview = match s {
+                        "off" => PreviewDefault::Off,
+                        "auto" => PreviewDefault::Auto,
+                        "always" => PreviewDefault::Always,
+                        _ => ui.preview,
+                    };
+                }
+            }
+            "preview_open_width" => {
+                if let Some(s) = node.args.first().and_then(|v| v.as_string()) {
+                    ui.preview_open_width = s.to_string();
+                }
+            }
+            "preview_closed_width" => {
+                if let Some(s) = node.args.first().and_then(|v| v.as_string()) {
+                    ui.preview_closed_width = s.to_string();
+                }
+            }
+            "mask_secrets" => {
+                if let Some(b) = node.args.first().and_then(|v| v.as_bool()) {
+                    ui.mask_secrets = b;
+                }
+            }
+            _ => {} // forward-compat: ignore unknown
+        }
     }
 }
 
@@ -223,9 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn from_ast_ignores_unknown_sections_for_now() {
-        // Skeleton from_ast returns defaults regardless of input.
-        // Per-section commits will replace this gradually.
+    fn from_ast_ignores_unknown_top_level_sections() {
         let nodes = parse::parse(
             r#"
             future_section "unknown thing"
@@ -234,7 +275,89 @@ mod tests {
         )
         .unwrap();
         let config = Config::from_ast(&nodes);
-        // Until commit 3 wires `ui` parsing, defaults remain.
-        assert_eq!(config.ui.preview, PreviewDefault::Off);
+        // unknown_section silently dropped; ui still parsed.
+        assert_eq!(config.ui.preview, PreviewDefault::Always);
+    }
+
+    // ---- ui block parsing ----
+
+    #[test]
+    fn ui_preview_off_auto_always() {
+        for (text, expected) in [
+            (r#"ui { preview "off" }"#, PreviewDefault::Off),
+            (r#"ui { preview "auto" }"#, PreviewDefault::Auto),
+            (r#"ui { preview "always" }"#, PreviewDefault::Always),
+        ] {
+            let nodes = parse::parse(text).unwrap();
+            let config = Config::from_ast(&nodes);
+            assert_eq!(config.ui.preview, expected, "input: {text}");
+        }
+    }
+
+    #[test]
+    fn ui_unknown_preview_value_keeps_default() {
+        let nodes = parse::parse(r#"ui { preview "garbage" }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.ui.preview, PreviewDefault::Off); // default
+    }
+
+    #[test]
+    fn ui_preview_widths_set_strings() {
+        let nodes = parse::parse(
+            r#"ui {
+                preview_open_width "85%"
+                preview_closed_width "60%"
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.ui.preview_open_width, "85%");
+        assert_eq!(config.ui.preview_closed_width, "60%");
+    }
+
+    #[test]
+    fn ui_mask_secrets_bool() {
+        let nodes = parse::parse(r#"ui { mask_secrets true }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert!(config.ui.mask_secrets);
+
+        let nodes = parse::parse(r#"ui { mask_secrets false }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert!(!config.ui.mask_secrets);
+    }
+
+    #[test]
+    fn ui_unknown_inner_keys_ignored() {
+        let nodes = parse::parse(
+            r#"ui {
+                preview "auto"
+                future_setting "value"
+                mask_secrets true
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        // known keys still applied; unknown silently dropped.
+        assert_eq!(config.ui.preview, PreviewDefault::Auto);
+        assert!(config.ui.mask_secrets);
+    }
+
+    #[test]
+    fn ui_partial_block_inherits_defaults_for_missing_keys() {
+        // Only `preview` set — other ui fields stay at defaults.
+        let nodes = parse::parse(r#"ui { preview "always" }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.ui.preview, PreviewDefault::Always);
+        assert_eq!(config.ui.preview_open_width, "90%"); // default
+        assert_eq!(config.ui.preview_closed_width, "70%"); // default
+        assert!(!config.ui.mask_secrets); // default
+    }
+
+    #[test]
+    fn ui_bad_type_for_field_keeps_default() {
+        // `mask_secrets "yes"` — string where bool expected. Skip silently.
+        let nodes = parse::parse(r#"ui { mask_secrets "yes" }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert!(!config.ui.mask_secrets); // default
     }
 }
