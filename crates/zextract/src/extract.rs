@@ -191,9 +191,9 @@ fn extract_custom(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
                 if raw.is_empty() {
                     continue;
                 }
-                // Build fields for all capture groups: {0} = full match,
-                // {1} = group 1 (= raw), {2}, {3}, ... for further groups.
-                // {match} is an alias for {1} (or {0} when no groups).
+                // Build fields for all capture groups:
+                //   {0} = full regex match
+                //   {1} = group 1 (alias: {match}), {2}, {3}, …
                 let mut fields = HashMap::new();
                 let full_str = full.as_str();
                 fields.insert("0".to_string(), full_str.to_string());
@@ -202,12 +202,15 @@ fn extract_custom(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
                         fields.insert(i.to_string(), g.as_str().to_string());
                     }
                 }
-                fields.insert("match".to_string(), raw.clone());
+                // {match} = group(1) when groups present, else full match.
+                let match_val = caps.get(1)
+                    .map(|g| g.as_str())
+                    .unwrap_or(full_str);
+                fields.insert("match".to_string(), match_val.to_string());
 
                 let expanded = match &cp.template {
                     Some(tmpl) => {
                         let mut out = tmpl.clone();
-                        // Replace {0}, {1}, {2}, … with captured group values.
                         for (key, val) in &fields {
                             out = out.replace(&format!("{{{key}}}"), val);
                         }
@@ -215,6 +218,18 @@ fn extract_custom(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
                     }
                     None => raw.clone(),
                 };
+
+                // `raw` is the canonical copy/dedup value:
+                //   - Template present: the expanded result (the final URL or
+                //     value the user wants to copy). Keeps each unique
+                //     expansion as a distinct entry after dedup.
+                //   - No template: the regex match text (group 1 or full).
+                let raw = if cp.template.is_some() {
+                    expanded.clone()
+                } else {
+                    raw
+                };
+
                 match ty {
                     MatchType::Url => { fields.insert("url".to_string(), expanded.clone()); }
                     MatchType::File => { fields.insert("file".to_string(), expanded.clone()); }
@@ -422,6 +437,75 @@ mod fixture_tests {
     }
 
     #[test]
+    fn multi_group_patterns_fixture() {
+        use crate::config::CustomPattern;
+        let text = include_str!("../tests/fixtures/multi_group_patterns.txt");
+
+        let patterns = PatternsConfig {
+            custom: vec![
+                CustomPattern {
+                    name: "port".to_string(),
+                    regex: r":[0-9]{4,5}\b".to_string(),
+                    ty: "url".to_string(),
+                    template: None,
+                },
+                CustomPattern {
+                    name: "jira".to_string(),
+                    regex: r"([A-Z]+)-([0-9]+[A-Z]*)".to_string(),
+                    ty: "url".to_string(),
+                    template: Some("https://jira.example.com/browse/{1}-{2}".to_string()),
+                },
+                CustomPattern {
+                    name: "github-pr".to_string(),
+                    regex: r"github\.com/([^/\s]+)/([^/\s]+)/pull/([0-9]+)".to_string(),
+                    ty: "url".to_string(),
+                    template: Some("https://github.com/{1}/{2}/pull/{3}".to_string()),
+                },
+            ],
+        };
+
+        let matches = extract(text, &patterns);
+
+        // Port: :3000, :9090, :8080
+        let ports: Vec<_> = matches.iter()
+            .filter(|m| m.label.as_deref() == Some("port"))
+            .collect();
+        assert!(ports.len() >= 3, "expected ≥3 port matches, got {}", ports.len());
+
+        // Jira: ST-154R, BACKEND-42, FRONTEND-7, OPS-100 + git log refs
+        let jira: Vec<_> = matches.iter()
+            .filter(|m| m.label.as_deref() == Some("jira"))
+            .collect();
+        assert!(jira.len() >= 4, "expected ≥4 jira matches, got {}", jira.len());
+
+        // ST-154R: group 1 = "ST", group 2 = "154R", display = full URL
+        let st = jira.iter().find(|m| m.fields.get("2").map(|s| s.as_str()) == Some("154R"));
+        let st = st.expect("ST-154R not found");
+        assert_eq!(st.fields.get("1").unwrap(), "ST");
+        assert_eq!(st.fields.get("2").unwrap(), "154R");
+        assert_eq!(st.display, "https://jira.example.com/browse/ST-154R");
+        assert_eq!(st.fields.get("url").unwrap(), "https://jira.example.com/browse/ST-154R");
+
+        // GitHub PRs: 3 distinct PRs across 2 orgs
+        let prs: Vec<_> = matches.iter()
+            .filter(|m| m.label.as_deref() == Some("github-pr"))
+            .collect();
+        assert!(prs.len() >= 3, "expected ≥3 PR matches, got {}", prs.len());
+
+        // PR #99: org=myorg, repo=myrepo, number=99
+        let pr99 = prs.iter().find(|m| m.fields.get("3").map(|s| s.as_str()) == Some("99"));
+        let pr99 = pr99.expect("PR #99 not found");
+        assert_eq!(pr99.fields.get("1").unwrap(), "myorg");
+        assert_eq!(pr99.fields.get("2").unwrap(), "myrepo");
+        assert_eq!(pr99.display, "https://github.com/myorg/myrepo/pull/99");
+
+        // Cross-org PR: otherorg/otherrepo/pull/7
+        let pr7 = prs.iter().find(|m| m.fields.get("1").map(|s| s.as_str()) == Some("otherorg"));
+        let pr7 = pr7.expect("cross-org PR not found");
+        assert_eq!(pr7.display, "https://github.com/otherorg/otherrepo/pull/7");
+    }
+
+    #[test]
     fn custom_patterns_fixture_port_and_jira() {
         use crate::config::CustomPattern;
         let text = include_str!("../tests/fixtures/custom_patterns.txt");
@@ -462,9 +546,11 @@ mod fixture_tests {
             jira_by_display.len(),
             jira_by_display.iter().map(|m| &m.display).collect::<Vec<_>>());
 
-        // Template expands correctly
-        let proj123 = matches.iter().find(|m| m.raw == "PROJ-123").unwrap();
-        assert_eq!(proj123.display, "https://jira.example.com/browse/PROJ-123");
+        // Template expands correctly; raw = expanded URL
+        let proj123 = matches.iter()
+            .find(|m| m.display == "https://jira.example.com/browse/PROJ-123")
+            .unwrap();
+        assert_eq!(proj123.raw, "https://jira.example.com/browse/PROJ-123");
         assert_eq!(proj123.fields.get("url").unwrap(),
             "https://jira.example.com/browse/PROJ-123");
     }
@@ -494,22 +580,20 @@ mod tests {
             Some("https://jira.example.com/browse/{match}"));
         let text = "Fix PROJ-123 and PROJ-456 soon";
         let matches = extract(text, &p);
+        // raw = expanded URL (template present); filter by label
         let jira: Vec<_> = matches.iter()
-            .filter(|m| m.raw == "PROJ-123" || m.raw == "PROJ-456")
+            .filter(|m| m.label.as_deref() == Some("jira"))
             .collect();
         assert_eq!(jira.len(), 2);
         assert_eq!(jira[0].ty, MatchType::Url);
-        // Template applied: display is the expanded URL
         assert!(jira[0].display.contains("jira.example.com"));
         assert!(jira[0].display.contains("PROJ-"));
-        // url field populated so open verb works
         assert!(jira[0].fields.get("url").unwrap().contains("jira.example.com"));
     }
 
     #[test]
-    fn custom_pattern_capture_group_extracts_group1() {
-        // Full match: "New Jira ticket : ST-154R"
-        // Group 1:    "ST-154R"  ← only this becomes raw/{match}
+    fn custom_pattern_capture_group_context_prefix() {
+        // Template present → raw = expanded URL (unique dedup key).
         let p = patterns_with("jira",
             r"New Jira ticket : ([A-Z]+-[0-9]+[A-Z]*)",
             "url",
@@ -517,13 +601,14 @@ mod tests {
         let text = "New Jira ticket : ST-154R";
         let matches = extract(text, &p);
         let m = matches.iter().find(|m| m.label.as_deref() == Some("jira")).unwrap();
-        assert_eq!(m.raw, "ST-154R");
+        assert_eq!(m.raw, "https://jira.example.com/browse/ST-154R");
         assert_eq!(m.display, "https://jira.example.com/browse/ST-154R");
+        assert_eq!(m.fields.get("match").unwrap(), "ST-154R");
     }
 
     #[test]
     fn custom_pattern_multi_group_template() {
-        // regex has 3 groups; template uses {1}, {2}, {3}
+        // 3 groups; raw = expanded URL so each unique PR survives dedup.
         let p = patterns_with("pr",
             r"github\.com/([^/]+)/([^/]+)/pull/([0-9]+)",
             "url",
@@ -531,7 +616,7 @@ mod tests {
         let text = "see github.com/myorg/myrepo/pull/42 for details";
         let matches = extract(text, &p);
         let m = matches.iter().find(|m| m.label.as_deref() == Some("pr")).unwrap();
-        assert_eq!(m.raw, "myorg"); // group 1
+        assert_eq!(m.raw, "https://github.com/myorg/myrepo/pull/42");
         assert_eq!(m.display, "https://github.com/myorg/myrepo/pull/42");
         assert_eq!(m.fields.get("1").unwrap(), "myorg");
         assert_eq!(m.fields.get("2").unwrap(), "myrepo");
@@ -564,12 +649,23 @@ mod tests {
     }
 
     #[test]
-    fn custom_pattern_no_groups_uses_full_match() {
+    fn custom_pattern_no_groups_with_template_raw_is_expanded() {
+        // No groups + template → raw = expanded URL.
         let p = patterns_with("jira", r"[A-Z]+-[0-9]+", "url",
             Some("https://jira.example.com/browse/{match}"));
         let text = "Fix PROJ-123 today";
         let matches = extract(text, &p);
         let m = matches.iter().find(|m| m.label.as_deref() == Some("jira")).unwrap();
+        assert_eq!(m.raw, "https://jira.example.com/browse/PROJ-123");
+    }
+
+    #[test]
+    fn custom_pattern_no_template_raw_is_match_text() {
+        // No template → raw = the regex match text itself.
+        let p = patterns_with("ticket", r"[A-Z]+-[0-9]+", "cmd", None);
+        let text = "Fix PROJ-123 today";
+        let matches = extract(text, &p);
+        let m = matches.iter().find(|m| m.label.as_deref() == Some("ticket")).unwrap();
         assert_eq!(m.raw, "PROJ-123");
     }
 

@@ -1,0 +1,22 @@
+$ cargo run --example server
+   Compiling myapp v0.1.0
+    Finished dev profile in 2.1s
+     Running on http://localhost:3000
+     Metrics at http://127.0.0.1:9090/metrics
+     Admin API on :8080
+
+Sprint board update:
+  New Jira ticket : ST-154R    assigned to alice
+  Blocked by      : BACKEND-42 (needs API contract)
+  In review       : FRONTEND-7 (waiting on ST-154R)
+  Closed          : OPS-100
+
+Merged today:
+  github.com/myorg/myrepo/pull/99   "Fix login timeout"
+  github.com/myorg/myrepo/pull/100  "Bump dependencies"
+  github.com/otherorg/otherrepo/pull/7 "Add dark mode"
+
+$ git log --oneline -3
+a1b2c3d Fix login timeout (ST-154R)
+e4f5g6h Bump deps (BACKEND-42)
+i7j8k9l Dark mode (FRONTEND-7)
