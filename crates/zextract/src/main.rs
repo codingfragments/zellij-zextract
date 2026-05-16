@@ -10,6 +10,7 @@ mod action;
 mod extract;
 mod fuzzy;
 mod pattern;
+mod query;
 mod render;
 mod source_pane;
 
