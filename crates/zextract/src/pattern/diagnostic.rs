@@ -105,7 +105,7 @@ fn push_match(
         raw: raw.clone(),
         display: raw,
         context: context.to_string(),
-        span: (span_start, span_end),
+        label: None, span: (span_start, span_end),
         fields,
     });
 }

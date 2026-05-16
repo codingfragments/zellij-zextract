@@ -700,7 +700,7 @@ impl State {
             let sample = targets
                 .first()
                 .and_then(|&i| self.matches.get(i))
-                .map(|m| m.ty.tag())
+                .map(|m| m.effective_tag())
                 .unwrap_or("selection");
             self.message = Some(format!(
                 "'{}' not available for [{}]",
@@ -790,7 +790,7 @@ impl State {
                     .iter()
                     .filter_map(|&i| self.matches.get(i))
                     .filter_map(|m| {
-                        let tag = m.ty.tag();
+                        let tag = m.effective_tag();
                         let tmpl = self.config.actions.overrides.get(tag)
                             .or_else(|| self.config.actions.overrides.get("default"))
                             .and_then(|t| t.edit.as_deref())
@@ -839,7 +839,7 @@ impl State {
                 self.message = Some(format!(
                     "'{}' not available for [{}]",
                     verb.label(),
-                    m.ty.tag()
+                    m.effective_tag()
                 ));
                 true
             }
@@ -957,7 +957,7 @@ impl State {
             .iter()
             .enumerate()
             .filter(|(_, m)| {
-                let tag = m.ty.tag();
+                let tag = m.effective_tag();
                 let include_ok = parsed.includes.is_empty()
                     || parsed.includes.iter().any(|t| t == tag);
                 let exclude_ok = !parsed.excludes.iter().any(|t| t == tag);
@@ -1160,7 +1160,7 @@ impl State {
                 let mut spans = vec![
                     gutter,
                     Span::styled(
-                        format!("[{}]  ", m.ty.tag()),
+                        format!("[{}]  ", m.effective_tag()),
                         Style::default().fg(type_color(m.ty)),
                     ),
                 ];
@@ -1257,7 +1257,7 @@ impl State {
         if let Some(m) = self.current_match() {
             let default = action::default_verb(m, &self.config.types);
             line1.push(Span::styled(
-                format!(" {}", m.ty.tag()),
+                format!(" {}", m.effective_tag()),
                 Style::default()
                     .fg(type_color(m.ty))
                     .add_modifier(Modifier::BOLD),

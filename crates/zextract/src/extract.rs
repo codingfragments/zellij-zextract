@@ -35,6 +35,18 @@ pub struct Match {
     /// (latest = larger `span.0`) and for the JSON export in Phase 5.
     pub span: (usize, usize),
     pub fields: HashMap<String, String>,
+    /// Display/filter label override for custom patterns. `None` for all
+    /// built-in patterns — `effective_tag()` falls back to `ty.tag()`.
+    pub label: Option<String>,
+}
+
+impl Match {
+    /// The tag used for display, type-filter (`#name`), and the list
+    /// row label. Returns the custom pattern name when set, otherwise
+    /// the built-in type tag (`"url"`, `"file"`, etc.).
+    pub fn effective_tag(&self) -> &str {
+        self.label.as_deref().unwrap_or_else(|| self.ty.tag())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -184,6 +196,7 @@ fn extract_custom(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
                     context: line.to_string(),
                     span: (span_start, byte_offset_of_line + m.end()),
                     fields,
+                    label: Some(cp.name.clone()),
                 });
             }
             byte_offset_of_line += line.len() + 1; // +1 for '\n'

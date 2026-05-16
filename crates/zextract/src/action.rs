@@ -277,7 +277,7 @@ fn match_to_json_object(m: &Match, out: &mut String) {
     use std::fmt::Write as _;
     out.push('{');
     // Universal fields, deterministic order.
-    push_json_kv(out, "type", m.ty.tag());
+    push_json_kv(out, "type", m.effective_tag());
     out.push(',');
     push_json_kv(out, "raw", &m.raw);
     out.push(',');
@@ -552,7 +552,7 @@ mod tests {
             raw: "https://example.com".to_string(),
             display: "https://example.com".to_string(),
             context: "see https://example.com here".to_string(),
-            span: (4, 23),
+            label: None, span: (4, 23),
             fields,
         }
     }
@@ -567,7 +567,7 @@ mod tests {
             raw: "src/main.rs:42:8".to_string(),
             display: "src/main.rs:42:8".to_string(),
             context: "error at src/main.rs:42:8".to_string(),
-            span: (9, 25),
+            label: None, span: (9, 25),
             fields,
         }
     }
@@ -581,7 +581,7 @@ mod tests {
             raw: "ghp_abc".to_string(),
             display: "ghp_abc".to_string(),
             context: String::new(),
-            span: (0, 7),
+            label: None, span: (0, 7),
             fields,
         }
     }
@@ -592,7 +592,7 @@ mod tests {
             raw: String::new(),
             display: String::new(),
             context: String::new(),
-            span: (0, 0),
+            label: None, span: (0, 0),
             fields: HashMap::new(),
         }
     }
