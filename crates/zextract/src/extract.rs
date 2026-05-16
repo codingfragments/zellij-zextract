@@ -169,37 +169,50 @@ fn extract_custom(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
         let ty = MatchType::from_tag(&cp.ty).unwrap_or(MatchType::Url);
         let mut byte_offset_of_line = 0usize;
         for line in text.lines() {
-            for m in re.find_iter(line) {
-                let raw = m.as_str().to_string();
+            for caps in re.captures_iter(line) {
+                let full = caps.get(0).unwrap();
+                // If the regex has a capture group, group(1) is `{match}`.
+                // This lets users write patterns like:
+                //   `New Jira ticket : ([A-Z]+-[0-9]+)` — the prefix
+                //   anchors the match but only the ticket ID is captured.
+                // No groups → full match is used (backwards-compatible).
+                let (raw, span_start, span_end) = match caps.get(1) {
+                    Some(g) => (
+                        g.as_str().to_string(),
+                        byte_offset_of_line + g.start(),
+                        byte_offset_of_line + g.end(),
+                    ),
+                    None => (
+                        full.as_str().to_string(),
+                        byte_offset_of_line + full.start(),
+                        byte_offset_of_line + full.end(),
+                    ),
+                };
                 if raw.is_empty() {
                     continue;
                 }
-                // Apply template if provided, else display = raw.
                 let expanded = match &cp.template {
                     Some(tmpl) => tmpl.replace("{match}", &raw),
                     None => raw.clone(),
                 };
                 let mut fields = HashMap::new();
-                // Populate the type-specific field so verbs (open, edit)
-                // can find the right value.
                 match ty {
                     MatchType::Url => { fields.insert("url".to_string(), expanded.clone()); }
                     MatchType::File => { fields.insert("file".to_string(), expanded.clone()); }
                     _ => {}
                 }
                 fields.insert("match".to_string(), raw.clone());
-                let span_start = byte_offset_of_line + m.start();
                 out.push(Match {
                     ty,
                     raw: raw.clone(),
                     display: expanded,
                     context: line.to_string(),
-                    span: (span_start, byte_offset_of_line + m.end()),
+                    span: (span_start, span_end),
                     fields,
                     label: Some(cp.name.clone()),
                 });
             }
-            byte_offset_of_line += line.len() + 1; // +1 for '\n'
+            byte_offset_of_line += line.len() + 1;
         }
     }
     out
@@ -473,6 +486,31 @@ mod tests {
         assert!(jira[0].display.contains("PROJ-"));
         // url field populated so open verb works
         assert!(jira[0].fields.get("url").unwrap().contains("jira.example.com"));
+    }
+
+    #[test]
+    fn custom_pattern_capture_group_extracts_group1() {
+        // Full match: "New Jira ticket : ST-154R"
+        // Group 1:    "ST-154R"  ← only this becomes raw/{match}
+        let p = patterns_with("jira",
+            r"New Jira ticket : ([A-Z]+-[0-9]+[A-Z]*)",
+            "url",
+            Some("https://jira.example.com/browse/{match}"));
+        let text = "New Jira ticket : ST-154R";
+        let matches = extract(text, &p);
+        let m = matches.iter().find(|m| m.label.as_deref() == Some("jira")).unwrap();
+        assert_eq!(m.raw, "ST-154R");
+        assert_eq!(m.display, "https://jira.example.com/browse/ST-154R");
+    }
+
+    #[test]
+    fn custom_pattern_no_groups_uses_full_match() {
+        let p = patterns_with("jira", r"[A-Z]+-[0-9]+", "url",
+            Some("https://jira.example.com/browse/{match}"));
+        let text = "Fix PROJ-123 today";
+        let matches = extract(text, &p);
+        let m = matches.iter().find(|m| m.label.as_deref() == Some("jira")).unwrap();
+        assert_eq!(m.raw, "PROJ-123");
     }
 
     #[test]
