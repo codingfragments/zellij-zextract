@@ -70,6 +70,13 @@ impl Config {
                         config.editor_command_prefix = s.to_string();
                     }
                 }
+                "log_level" => {
+                    if let Some(s) = node.args.first().and_then(|v| v.as_string()) {
+                        if let Some(lvl) = LogLevel::parse(s) {
+                            config.log_level = lvl;
+                        }
+                    }
+                }
                 // Other sections wired in upcoming commits. Unknown
                 // names ignored for forward-compat.
                 _ => {}
@@ -315,13 +322,35 @@ impl Default for LimitsConfig {
 
 // ---- Logging ----
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     Off,
     Error,
     Warn,
     Info,
     Debug,
+}
+
+impl LogLevel {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(Self::Off),
+            "error" => Some(Self::Error),
+            "warn" => Some(Self::Warn),
+            "info" => Some(Self::Info),
+            "debug" => Some(Self::Debug),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a message at `target` should be emitted given the current
+/// threshold. Ordering of the enum (Off < Error < Warn < Info < Debug)
+/// is leveraged via the `#[derive(PartialOrd, Ord)]` above: a target
+/// of `Debug` is the chattiest and only emits when current is `Debug`;
+/// `Error` emits whenever current >= Error.
+pub fn should_log(target: LogLevel, current: LogLevel) -> bool {
+    target != LogLevel::Off && target <= current
 }
 
 #[cfg(test)]
@@ -587,6 +616,59 @@ mod tests {
         .unwrap();
         let config = Config::from_ast(&nodes);
         assert_eq!(config.grab.profiles[0].source, GrabSource::Scrollback);
+    }
+
+    // ---- log_level + should_log ----
+
+    #[test]
+    fn log_level_default_info() {
+        let config = Config::from_ast(&[]);
+        assert_eq!(config.log_level, LogLevel::Info);
+    }
+
+    #[test]
+    fn log_level_all_named_values_parse() {
+        for (text, expected) in [
+            (r#"log_level "off""#, LogLevel::Off),
+            (r#"log_level "error""#, LogLevel::Error),
+            (r#"log_level "warn""#, LogLevel::Warn),
+            (r#"log_level "info""#, LogLevel::Info),
+            (r#"log_level "debug""#, LogLevel::Debug),
+        ] {
+            let nodes = parse::parse(text).unwrap();
+            let config = Config::from_ast(&nodes);
+            assert_eq!(config.log_level, expected, "input: {text}");
+        }
+    }
+
+    #[test]
+    fn log_level_unknown_keeps_default() {
+        let nodes = parse::parse(r#"log_level "TRACE""#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.log_level, LogLevel::Info);
+    }
+
+    #[test]
+    fn should_log_threshold_semantics() {
+        // Off means: never emit anything, even errors.
+        assert!(!should_log(LogLevel::Error, LogLevel::Off));
+        assert!(!should_log(LogLevel::Debug, LogLevel::Off));
+
+        // Error threshold: only Error gets through.
+        assert!(should_log(LogLevel::Error, LogLevel::Error));
+        assert!(!should_log(LogLevel::Warn, LogLevel::Error));
+
+        // Info threshold: Error/Warn/Info pass, Debug doesn't.
+        assert!(should_log(LogLevel::Error, LogLevel::Info));
+        assert!(should_log(LogLevel::Warn, LogLevel::Info));
+        assert!(should_log(LogLevel::Info, LogLevel::Info));
+        assert!(!should_log(LogLevel::Debug, LogLevel::Info));
+
+        // Debug threshold: everything passes (except a target of Off,
+        // which is nonsensical — you don't emit at "off level").
+        assert!(should_log(LogLevel::Error, LogLevel::Debug));
+        assert!(should_log(LogLevel::Debug, LogLevel::Debug));
+        assert!(!should_log(LogLevel::Off, LogLevel::Debug));
     }
 
     // ---- editor_command_prefix (top-level scalar) ----

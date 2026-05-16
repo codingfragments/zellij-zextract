@@ -26,10 +26,23 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Sta
 use zellij_tile::prelude::*;
 
 use crate::action::{DispatchResult, Verb};
-use crate::config::{Config, LimitsConfig};
+use crate::config::{should_log, Config, LimitsConfig, LogLevel};
 use crate::extract::{Match, MatchType};
 use crate::fuzzy::{FuzzyEngine, ScoredMatch};
 use crate::query::ParsedQuery;
+
+/// Log a message at `$level` if `self.config.log_level` allows it.
+/// `$self` is expected to be a `&State` (or anything with `.config`).
+/// Prefix `[zextract] ` is added automatically — call sites pass the
+/// raw message body. The format!() is short-circuited away when the
+/// level is filtered, so cheap when log_level is `off`.
+macro_rules! plog {
+    ($self:expr, $level:expr, $($arg:tt)*) => {
+        if should_log($level, $self.config.log_level) {
+            eprintln!("[zextract] {}", format!($($arg)*));
+        }
+    };
+}
 
 // The Phase 1 hardcoded `RECENT_LINES = 150` is now driven by
 // `config.grab.profiles[current].lines`. See `apply_config_after_load`
@@ -167,8 +180,10 @@ impl ZellijPlugin for State {
         ]);
 
         let ids = get_plugin_ids();
-        eprintln!(
-            "[zextract] plugin loaded; plugin_id={} initial_cwd={:?}",
+        plog!(
+            self,
+            LogLevel::Debug,
+            "plugin loaded; plugin_id={} initial_cwd={:?}",
             ids.plugin_id,
             ids.initial_cwd.display().to_string(),
         );
@@ -197,15 +212,17 @@ impl ZellijPlugin for State {
                 // If $HOME is missing the async chain never starts, so
                 // mark config_loaded synchronously so the placeholder
                 // clears.
-                if !request_host_change_for_config_load() {
+                if !self.request_host_change_for_config_load() {
                     self.config_loaded = true;
                 }
                 self.try_extract();
                 true
             }
             Event::HostFolderChanged(new_path) => {
-                eprintln!(
-                    "[zextract] HostFolderChanged: /host -> {:?}",
+                plog!(
+                    self,
+                    LogLevel::Debug,
+                    "HostFolderChanged: /host -> {:?}",
                     new_path.display().to_string()
                 );
                 self.load_config_from_host();
@@ -216,8 +233,10 @@ impl ZellijPlugin for State {
                 true
             }
             Event::FailedToChangeHostFolder(err) => {
-                eprintln!(
-                    "[zextract] FailedToChangeHostFolder: err={err:?}. \
+                plog!(
+                    self,
+                    LogLevel::Warn,
+                    "FailedToChangeHostFolder: err={err:?}. \
                      Falling back to defaults."
                 );
                 self.config_loaded = true;
@@ -312,14 +331,18 @@ impl State {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                eprintln!(
-                    "[zextract] config load: no file at {path:?} — using defaults"
+                plog!(
+                    self,
+                    LogLevel::Debug,
+                    "config load: no file at {path:?} — using defaults"
                 );
                 return;
             }
             Err(e) => {
-                eprintln!(
-                    "[zextract] config load: read err path={path:?} \
+                plog!(
+                    self,
+                    LogLevel::Warn,
+                    "config load: read err path={path:?} \
                      kind={:?} err={e} — using defaults",
                     e.kind()
                 );
@@ -329,16 +352,20 @@ impl State {
         match config::parse::parse(&text) {
             Ok(nodes) => {
                 self.config = Config::from_ast(&nodes);
-                eprintln!(
-                    "[zextract] config load: OK ({} bytes, {} top-level nodes)",
+                plog!(
+                    self,
+                    LogLevel::Debug,
+                    "config load: OK ({} bytes, {} top-level nodes)",
                     text.len(),
                     nodes.len(),
                 );
                 self.apply_config_after_load();
             }
             Err(e) => {
-                eprintln!(
-                    "[zextract] config load: parse err {e} — using defaults"
+                plog!(
+                    self,
+                    LogLevel::Warn,
+                    "config load: parse err {e} — using defaults"
                 );
             }
         }
@@ -390,7 +417,7 @@ impl State {
         let profile = match self.config.grab.profiles.get(self.current_grab_profile_index) {
             Some(p) => p.clone(),
             None => {
-                eprintln!("[zextract] try_extract: no grab profiles available");
+                plog!(self, LogLevel::Warn, "try_extract: no grab profiles available");
                 return;
             }
         };
@@ -427,8 +454,10 @@ impl State {
             None => all,
         };
 
-        eprintln!(
-            "[zextract] extraction starting; source_pane={source} \
+        plog!(
+            self,
+            LogLevel::Debug,
+            "extraction starting; source_pane={source} \
              profile={:?} source_kind={:?} cap={:?} captured_lines={} chars={}",
             profile.name,
             profile.source,
@@ -439,8 +468,10 @@ impl State {
         self.matches = extract::extract(&trimmed);
         // Retain the source text for the preview pane.
         self.captured_text = trimmed;
-        eprintln!(
-            "[zextract] extraction done; matches={}",
+        plog!(
+            self,
+            LogLevel::Debug,
+            "extraction done; matches={}",
             self.matches.len()
         );
         self.extraction_done = true;
@@ -885,7 +916,7 @@ impl State {
             None,                       // pinned unchanged
             None,                       // borderless unchanged
         ) else {
-            eprintln!("[zextract] resize: failed to build coords for w={w:?}");
+            plog!(self, LogLevel::Warn, "resize: failed to build coords for w={w:?}");
             return;
         };
         change_floating_panes_coordinates(vec![(
@@ -1337,17 +1368,19 @@ fn highlight_spans(display: &str, indices: &[u32]) -> Vec<Span<'static>> {
 /// `/tmp`. Reading the user's `~/.config/zellij/zextract.kdl` requires
 /// reaching `/host/.config/zellij/zextract.kdl` after `/host` has been
 /// repointed at `$HOME`. See planning.md Phase 7 for the rationale.
-fn request_host_change_for_config_load() -> bool {
-    let home = match std::env::var("HOME") {
-        Ok(h) if !h.is_empty() => h,
-        _ => {
-            eprintln!("[zextract] config load: no $HOME — using defaults");
-            return false;
-        }
-    };
-    eprintln!("[zextract] config load: change_host_folder -> {home:?}");
-    change_host_folder(std::path::PathBuf::from(&home));
-    true
+impl State {
+    fn request_host_change_for_config_load(&self) -> bool {
+        let home = match std::env::var("HOME") {
+            Ok(h) if !h.is_empty() => h,
+            _ => {
+                plog!(self, LogLevel::Warn, "config load: no $HOME — using defaults");
+                return false;
+            }
+        };
+        plog!(self, LogLevel::Debug, "config load: change_host_folder -> {home:?}");
+        change_host_folder(std::path::PathBuf::from(&home));
+        true
+    }
 }
 
 /// Per-verb cap on multi-target dispatch. User-configurable via the
