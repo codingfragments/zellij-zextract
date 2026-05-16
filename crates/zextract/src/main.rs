@@ -31,8 +31,10 @@ use crate::extract::{Match, MatchType};
 use crate::fuzzy::{FuzzyEngine, ScoredMatch};
 use crate::query::ParsedQuery;
 
-/// Hardcoded grab cap for Phase 1+2. Becomes configurable in Phase 7.
-const RECENT_LINES: usize = 150;
+// The Phase 1 hardcoded `RECENT_LINES = 150` is now driven by
+// `config.grab.profiles[current].lines`. See `apply_config_after_load`
+// for how the current profile index is selected and `try_extract`
+// for how its source/lines values shape the scrollback grab.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -96,6 +98,11 @@ struct State {
     /// `change_floating_panes_coordinates` when the preview toggles
     /// (grows the pane to make room).
     own_plugin_id: u32,
+    /// Index into `config.grab.profiles` for the active scrollback-
+    /// grab profile. Set in `apply_config_after_load` from the
+    /// config's `default_profile`. `Ctrl-g` (commit 7c) cycles by
+    /// incrementing this mod profiles.len() and re-extracting.
+    current_grab_profile_index: usize,
     extraction_done: bool,
     mode: Mode,
     preview_open: bool,
@@ -129,6 +136,7 @@ impl Default for State {
             selected: HashSet::new(),
             source_pane: None,
             own_plugin_id: 0,
+            current_grab_profile_index: 0,
             extraction_done: false,
             mode: Mode::Input,
             preview_open: false,
@@ -338,7 +346,8 @@ impl State {
 
     /// Apply config-driven runtime state after a successful load.
     /// Today: set `preview_open` per the `preview` setting (Always =>
-    /// open at launch) and trigger a pane resize so the configured
+    /// open at launch), select the active grab profile from
+    /// `default_profile`, and trigger a pane resize so the configured
     /// preview widths take effect immediately rather than waiting for
     /// the next preview toggle.
     fn apply_config_after_load(&mut self) {
@@ -349,6 +358,18 @@ impl State {
         if self.preview_open != initial_preview_open {
             self.preview_open = initial_preview_open;
         }
+        // Resolve default_profile name to a position in profiles.
+        // Phase 7a's grab parser already falls back to the first
+        // profile when the name doesn't match, so this lookup is
+        // guaranteed to find a hit when profiles is non-empty.
+        self.current_grab_profile_index = self
+            .config
+            .grab
+            .profiles
+            .iter()
+            .position(|p| p.name == self.config.grab.default_profile)
+            .unwrap_or(0);
+
         // Pane resize regardless of preview_open value — picks up
         // any width changes the user set in config even when preview
         // starts closed.
@@ -360,21 +381,58 @@ impl State {
             return;
         }
         let Some(source) = self.source_pane else { return };
-        let Ok(contents) = get_pane_scrollback(PaneId::Terminal(source), true) else {
+
+        // Pick up the active grab profile. current_grab_profile_index
+        // was set in apply_config_after_load — or remains 0 (the first
+        // default profile = `quick { source scrollback; lines 150 }`)
+        // if config hasn't loaded yet, which matches the old Phase 1
+        // behavior verbatim.
+        let profile = match self.config.grab.profiles.get(self.current_grab_profile_index) {
+            Some(p) => p.clone(),
+            None => {
+                eprintln!("[zextract] try_extract: no grab profiles available");
+                return;
+            }
+        };
+
+        // `get_full_scrollback` controls whether `lines_above_viewport`
+        // is populated. Required for any scrollback-source profile;
+        // viewport-only profiles save the extra cost.
+        let want_full = matches!(profile.source, config::GrabSource::Scrollback);
+        let Ok(contents) = get_pane_scrollback(PaneId::Terminal(source), want_full) else {
             return;
         };
+
         let mut all = String::new();
-        for line in contents
-            .lines_above_viewport
-            .iter()
-            .chain(contents.viewport.iter())
-        {
-            all.push_str(line);
-            all.push('\n');
+        match profile.source {
+            config::GrabSource::Scrollback => {
+                for line in contents
+                    .lines_above_viewport
+                    .iter()
+                    .chain(contents.viewport.iter())
+                {
+                    all.push_str(line);
+                    all.push('\n');
+                }
+            }
+            config::GrabSource::Viewport => {
+                for line in &contents.viewport {
+                    all.push_str(line);
+                    all.push('\n');
+                }
+            }
         }
-        let trimmed = extract::take_recent(&all, RECENT_LINES);
+        let trimmed = match profile.lines {
+            Some(n) => extract::take_recent(&all, n as usize),
+            None => all,
+        };
+
         eprintln!(
-            "[zextract] extraction starting; source_pane={source} captured_lines={} chars={}",
+            "[zextract] extraction starting; source_pane={source} \
+             profile={:?} source_kind={:?} cap={:?} captured_lines={} chars={}",
+            profile.name,
+            profile.source,
+            profile.lines,
             trimmed.lines().count(),
             trimmed.len(),
         );
