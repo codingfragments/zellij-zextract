@@ -647,7 +647,6 @@ impl State {
     }
 
     fn refilter(&mut self) {
-        let displays: Vec<&str> = self.matches.iter().map(|m| m.display.as_str()).collect();
         // Remember the previously-selected match's index so we can preserve
         // selection across filter changes if it's still in the result set.
         let prev_selected_match_idx = self
@@ -656,13 +655,65 @@ impl State {
             .and_then(|i| self.filtered.get(i))
             .map(|s| s.index);
 
+        // Parse the query for `#type` filter tokens. Tag set comes from
+        // TYPE_PRIORITY — adding a custom type later is a one-line
+        // change at the call site (extend the slice).
+        let tags: Vec<&str> = extract::TYPE_PRIORITY
+            .iter()
+            .map(|t| t.tag())
+            .collect();
+        let parsed = query::parse_query(&self.query, &tags);
+
+        // Pre-filter the match-index space by parsed includes/excludes.
+        // Empty `includes` = no inclusion constraint. Excludes apply on top.
+        // The fuzzy step then runs over only the surviving indices, with
+        // displays held in parallel.
+        let allowed_indices: Vec<usize> = self
+            .matches
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                let tag = m.ty.tag();
+                let include_ok = parsed.includes.is_empty()
+                    || parsed.includes.iter().any(|t| t == tag);
+                let exclude_ok = !parsed.excludes.iter().any(|t| t == tag);
+                include_ok && exclude_ok
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        let allowed_displays: Vec<&str> = allowed_indices
+            .iter()
+            .map(|&i| self.matches[i].display.as_str())
+            .collect();
+
         // Per-type score bonuses bias relative ranking when fuzzy scores
         // are close. Numbers are small so the primary signal is the
         // fuzzy match itself; bonuses only nudge ties.
         let matches = &self.matches;
-        self.filtered = self.fuzzy.filter_with_bonus(&self.query, &displays, |i| {
-            matches.get(i).map(|m| extract::type_priority_bonus(m.ty)).unwrap_or(0)
-        });
+        let alloc_idx_for_filter = &allowed_indices;
+        let scored = self
+            .fuzzy
+            .filter_with_bonus(&parsed.fuzzy, &allowed_displays, |i| {
+                alloc_idx_for_filter
+                    .get(i)
+                    .and_then(|&mi| matches.get(mi))
+                    .map(|m| extract::type_priority_bonus(m.ty))
+                    .unwrap_or(0)
+            });
+
+        // The fuzzy engine returns indices into `allowed_displays`;
+        // remap back to indices into `self.matches`.
+        self.filtered = scored
+            .into_iter()
+            .filter_map(|s| {
+                allowed_indices.get(s.index).map(|&mi| ScoredMatch {
+                    index: mi,
+                    score: s.score,
+                    indices: s.indices,
+                })
+            })
+            .collect();
 
         let new_selection = if let Some(prev) = prev_selected_match_idx {
             self.filtered.iter().position(|s| s.index == prev).unwrap_or(0)
