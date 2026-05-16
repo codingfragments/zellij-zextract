@@ -45,6 +45,15 @@ enum Mode {
 }
 
 struct State {
+    /// True once the async config-load chain has reached a terminal
+    /// state (success OR any failure path: no $HOME, host change
+    /// rejected, file missing, parse error). Used by `render()` to
+    /// gate content display — until the flag is set the picker shows
+    /// a minimal "loading…" placeholder. This avoids the visible
+    /// reflow that would otherwise happen when content renders at
+    /// the keybind's default size, then jumps to the config-driven
+    /// width once apply_config_after_load fires.
+    config_loaded: bool,
     /// Loaded user config or defaults. Replaced once after plugin
     /// load completes the host-folder handshake (see HostFolderChanged
     /// event handler). Until then, all Phase 7-plumbed settings read
@@ -108,6 +117,7 @@ impl Default for State {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
         Self {
+            config_loaded: false,
             config: Config::default(),
             matches: Vec::new(),
             captured_text: String::new(),
@@ -176,7 +186,12 @@ impl ZellijPlugin for State {
                 // Permissions just landed — kick the async two-step
                 // config load: (1) request /host to repoint to $HOME,
                 // (2) read once HostFolderChanged confirms the swap.
-                request_host_change_for_config_load();
+                // If $HOME is missing the async chain never starts, so
+                // mark config_loaded synchronously so the placeholder
+                // clears.
+                if !request_host_change_for_config_load() {
+                    self.config_loaded = true;
+                }
                 self.try_extract();
                 true
             }
@@ -186,6 +201,10 @@ impl ZellijPlugin for State {
                     new_path.display().to_string()
                 );
                 self.load_config_from_host();
+                // Whatever happened in load_config_from_host (success,
+                // read error, parse error), the load attempt is done —
+                // unblock the picker.
+                self.config_loaded = true;
                 true
             }
             Event::FailedToChangeHostFolder(err) => {
@@ -193,8 +212,7 @@ impl ZellijPlugin for State {
                     "[zextract] FailedToChangeHostFolder: err={err:?}. \
                      Falling back to defaults."
                 );
-                // self.config stays at Config::default() — load_config
-                // would have done the same on a read failure.
+                self.config_loaded = true;
                 true
             }
             Event::PaneUpdate(manifest) => {
@@ -247,18 +265,26 @@ impl ZellijPlugin for State {
             ])
             .split(area);
 
-        self.render_input(chunks[0], &mut local_buf);
-        if self.preview_open {
-            let split = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(chunks[1]);
-            self.render_list(split[0], &mut local_buf);
-            self.render_preview(split[1], &mut local_buf);
+        if !self.config_loaded {
+            // Defer real content until the async config-load chain
+            // completes — avoids the visible reflow that would
+            // otherwise happen when the pane resizes from the
+            // keybind's default size to the config-driven width.
+            render_loading_placeholder(area, &mut local_buf);
         } else {
-            self.render_list(chunks[1], &mut local_buf);
+            self.render_input(chunks[0], &mut local_buf);
+            if self.preview_open {
+                let split = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(chunks[1]);
+                self.render_list(split[0], &mut local_buf);
+                self.render_preview(split[1], &mut local_buf);
+            } else {
+                self.render_list(chunks[1], &mut local_buf);
+            }
+            self.render_footer(chunks[2], &mut local_buf);
         }
-        self.render_footer(chunks[2], &mut local_buf);
 
         render::flush(&local_buf);
         self.render_buffer = Some(local_buf);
@@ -1195,20 +1221,26 @@ fn highlight_spans(display: &str, indices: &[u32]) -> Vec<Span<'static>> {
 /// landed. The actual read fires from `State::load_config_from_host`
 /// on the subsequent `Event::HostFolderChanged`.
 ///
+/// Returns true if the async chain was kicked off (HostFolderChanged
+/// event will fire), false if we gave up synchronously (no $HOME).
+/// The caller uses this to decide whether to leave `config_loaded`
+/// false (event will set it later) or flip it now (no event coming).
+///
 /// Why this dance: the WASI sandbox only preopens `/host`, `/data`,
 /// `/tmp`. Reading the user's `~/.config/zellij/zextract.kdl` requires
 /// reaching `/host/.config/zellij/zextract.kdl` after `/host` has been
 /// repointed at `$HOME`. See planning.md Phase 7 for the rationale.
-fn request_host_change_for_config_load() {
+fn request_host_change_for_config_load() -> bool {
     let home = match std::env::var("HOME") {
         Ok(h) if !h.is_empty() => h,
         _ => {
             eprintln!("[zextract] config load: no $HOME — using defaults");
-            return;
+            return false;
         }
     };
     eprintln!("[zextract] config load: change_host_folder -> {home:?}");
     change_host_folder(std::path::PathBuf::from(&home));
+    true
 }
 
 /// Per-verb cap on multi-target dispatch. Conservative defaults — the
@@ -1227,6 +1259,20 @@ fn cap_for_verb(verb: Verb) -> usize {
         Verb::Json => 100,
         Verb::Preview => usize::MAX,
     }
+}
+
+/// Minimal placeholder shown while the async config-load chain
+/// hasn't completed yet. Renders inside the existing bordered block
+/// so the chrome looks consistent with the loaded state. Lifespan in
+/// practice: ~130 ms from plugin load (initial cwd captured) to
+/// HostFolderChanged event (read + parse complete).
+fn render_loading_placeholder(area: Rect, buf: &mut Buffer) {
+    use ratatui::widgets::Wrap;
+    let para = Paragraph::new("zextract — loading config…")
+        .style(Style::default().fg(Color::DarkGray))
+        .wrap(Wrap { trim: true })
+        .block(Block::default().borders(Borders::ALL).title("zextract"));
+    para.render(area, buf);
 }
 
 /// Compute the recentered x-coordinate for a floating pane of the
