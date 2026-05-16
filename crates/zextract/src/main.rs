@@ -539,11 +539,6 @@ impl State {
                 self.deselect_all();
                 return true;
             }
-            // Ctrl-g → cycle through grab profiles + re-extract.
-            BareKey::Char('g') if only_ctrl => {
-                self.cycle_grab_profile();
-                return true;
-            }
             _ => {}
         }
         // Mode-specific routing.
@@ -625,13 +620,19 @@ impl State {
         }
         match key.bare_key {
             BareKey::Char(c) => {
-                // Letter keys are action verbs. Non-shift modifiers
-                // (Ctrl/Alt) reserved for Phase 5 (Ctrl-a, Ctrl-d).
+                // Non-shift modifiers (Ctrl/Alt) reserved for universals.
                 if !(key.has_no_modifiers()
                     || (key.has_modifiers(&[KeyModifier::Shift])
                         && key.key_modifiers.len() == 1))
                 {
                     return false;
+                }
+                // `g` cycles grab profiles — not a verb, handled here
+                // before verb_from_char so it doesn't fall through to
+                // the silent reject.
+                if c == 'g' && key.has_no_modifiers() {
+                    self.cycle_grab_profile();
+                    return true;
                 }
                 let Some(verb) = action::verb_from_char(c) else {
                     return false; // silent reject — key unbound
@@ -1268,6 +1269,8 @@ impl State {
                 line1.push(Span::raw(":json  "));
                 line1.push(Span::styled("Space", bold));
                 line1.push(Span::raw(":select  "));
+                line1.push(Span::styled("g", bold));
+                line1.push(Span::raw(":grab  "));
             }
         } else {
             line1.push(Span::raw(" "));
@@ -1299,8 +1302,6 @@ impl State {
                 Span::raw(":select-all  "),
                 Span::styled("^D", bold),
                 Span::raw(":clear-sel  "),
-                Span::styled("^G", bold),
-                Span::raw(":grab  "),
             ]);
         }
         line2.push(Span::styled("Esc", bold));
