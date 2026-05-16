@@ -376,6 +376,54 @@ mod fixture_tests {
             );
         }
     }
+
+    #[test]
+    fn custom_patterns_fixture_port_and_jira() {
+        use crate::config::CustomPattern;
+        let text = include_str!("../tests/fixtures/custom_patterns.txt");
+
+        let patterns = PatternsConfig {
+            custom: vec![
+                CustomPattern {
+                    name: "port".to_string(),
+                    regex: r":[0-9]{4,5}\b".to_string(),
+                    ty: "url".to_string(),
+                    template: None,
+                },
+                CustomPattern {
+                    name: "jira".to_string(),
+                    regex: r"[A-Z]+-[0-9]+".to_string(),
+                    ty: "url".to_string(),
+                    template: Some("https://jira.example.com/browse/{match}".to_string()),
+                },
+            ],
+        };
+
+        let matches = extract(text, &patterns);
+
+        // Port pattern: :3000, :8080, :5432, :443, :6443, :9000, :9090
+        let ports: Vec<_> = matches.iter()
+            .filter(|m| m.raw.starts_with(':'))
+            .collect();
+        assert!(ports.len() >= 4, "expected ≥4 port matches, got {}: {:?}",
+            ports.len(), ports.iter().map(|m| &m.raw).collect::<Vec<_>>());
+
+        // Jira pattern: PROJ-123, PROJ-456, API-789, OPS-42, PROJ-100, BACKEND-201
+        // Use display to check template was applied
+        let jira_by_display: Vec<_> = matches.iter()
+            .filter(|m| m.display.contains("jira.example.com"))
+            .collect();
+        assert!(jira_by_display.len() >= 4,
+            "expected ≥4 jira matches with template applied, got {}: {:?}",
+            jira_by_display.len(),
+            jira_by_display.iter().map(|m| &m.display).collect::<Vec<_>>());
+
+        // Template expands correctly
+        let proj123 = matches.iter().find(|m| m.raw == "PROJ-123").unwrap();
+        assert_eq!(proj123.display, "https://jira.example.com/browse/PROJ-123");
+        assert_eq!(proj123.fields.get("url").unwrap(),
+            "https://jira.example.com/browse/PROJ-123");
+    }
 }
 
 #[cfg(test)]
