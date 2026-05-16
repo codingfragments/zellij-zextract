@@ -485,6 +485,7 @@ impl State {
 
         let only_ctrl = key.has_modifiers(&[KeyModifier::Ctrl]) && key.key_modifiers.len() == 1;
         let only_shift = key.has_modifiers(&[KeyModifier::Shift]) && key.key_modifiers.len() == 1;
+        let only_alt = key.has_modifiers(&[KeyModifier::Alt]) && key.key_modifiers.len() == 1;
 
         // Universal keys handled in both modes.
         match key.bare_key {
@@ -537,6 +538,11 @@ impl State {
             // Ctrl-d → clear the entire selection.
             BareKey::Char('d') if only_ctrl => {
                 self.deselect_all();
+                return true;
+            }
+            // Alt-g → cycle grab profiles from either mode.
+            BareKey::Char('g') if only_alt => {
+                self.cycle_grab_profile();
                 return true;
             }
             _ => {}
@@ -1304,6 +1310,8 @@ impl State {
                 Span::raw(":select-all  "),
                 Span::styled("^D", bold),
                 Span::raw(":clear-sel  "),
+                Span::styled("M-g", bold),
+                Span::raw(":grab  "),
             ]);
         }
         line2.push(Span::styled("Esc", bold));
