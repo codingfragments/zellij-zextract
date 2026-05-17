@@ -192,7 +192,47 @@ actions {
 
 ## `patterns { }` block
 
-User-defined regex patterns. Each pattern gets its own display label
+The `patterns` block has two distinct roles: configuring built-in pattern
+behaviour and defining user-defined regex patterns.
+
+### Built-in pattern tuning
+
+#### `command { }` sub-block
+
+Controls the `cmd` type detection.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `flag_anchored` | bool | `false` | Enable flag-anchored command detection (see below) |
+
+**`flag_anchored` — what it does**
+
+The command pattern has three detection strategies, applied in order:
+
+1. **Prompt-anchored** — line starts with a known prompt marker (`❯ `, `$ `, `> `, `% `, `# `). Always on.
+2. **Exec-anchored** — line contains a known trigger word (`git`, `curl`, `docker`, `zellij`, `tmux`, …). Always on.
+3. **Flag-anchored** — line contains a `-x`/`-xyz`/`--long-flag` style argument; the command word is found by walking back to the nearest boundary character (`][}{><:;|&`). **Off by default.**
+
+Enable `flag_anchored` when you see commands in your scrollback that aren't caught by the first two strategies — for example, dry-run output, CI log lines, or build system output:
+
+```
+[dry-run] rsync -avz src/ dest/     ← no prompt, rsync not in trigger list
+Running: ssh -i key user@host       ← no prompt, but ssh IS in trigger list (no change needed)
+```
+
+**Why it is off by default:** flag-anchored can produce false positives on prose that incidentally contains flag-looking tokens, e.g. `"Use --verbose for more output"` would match `"Use --verbose for more output"` with command word `Use` — except the uppercase guard rejects it. Most English-prose false positives are caught by requiring the first word to start with a lowercase letter, but edge cases exist. See the [pattern detection notes](../README.md#pattern-detection-and-false-positives) in the README.
+
+```kdl
+patterns {
+    command {
+        flag_anchored true
+    }
+}
+```
+
+### User-defined regex patterns
+
+Each pattern gets its own display label
 in the picker and is filterable with `#name`.
 
 ### Per-pattern keys

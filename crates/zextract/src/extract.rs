@@ -148,6 +148,9 @@ pub fn extract(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
     all.extend(crate::pattern::uuid::extract(text));
     all.extend(crate::pattern::quoted::extract(text));
     all.extend(crate::pattern::command::extract(text));
+    if patterns.command.flag_anchored {
+        all.extend(crate::pattern::command::extract_flag_anchored(text));
+    }
     all.extend(crate::pattern::secret::extract(text));
     all.extend(extract_custom(text, patterns));
 
@@ -470,6 +473,7 @@ mod fixture_tests {
                     template: Some("https://github.com/{1}/{2}/pull/{3}".to_string()),
                 },
             ],
+            ..PatternsConfig::default()
         };
 
         let matches = extract(text, &patterns);
@@ -553,6 +557,7 @@ mod fixture_tests {
                     template: Some("https://jira.example.com/browse/{match}".to_string()),
                 },
             ],
+            ..PatternsConfig::default()
         };
 
         let matches = extract(text, &patterns);
@@ -612,6 +617,7 @@ mod tests {
                 ty: ty.to_string(),
                 template: template.map(String::from),
             }],
+            ..PatternsConfig::default()
         }
     }
 
@@ -844,6 +850,7 @@ mod tests {
                 ty: "cmd".to_string(),
                 template: Some("Routing path {1}".to_string()),
             }],
+            ..PatternsConfig::default()
         };
 
         let text = "Request failed at http://example.router.com/tester";

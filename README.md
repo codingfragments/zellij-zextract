@@ -8,10 +8,11 @@ A [Zellij](https://zellij.dev) plugin that extracts typed matches from your focu
 Fills the gap left by tmux tools like `extrakto`, `fingers`, and `fzf-links` for Zellij users.
 
 **Documentation:**
-[Built-in types](docs/types.md) ·
-[Config reference](docs/config-reference.md) ·
-[Customization guide](docs/customization.md) ·
-[Use cases](docs/use-cases.md)
+[Built-in patterns](doc/patterns.md) ·
+[Config reference](doc/config-reference.md) ·
+[Customization guide](doc/customization.md) ·
+[Use cases](doc/use-cases.md) ·
+[Built-in types](doc/types.md)
 
 ---
 
@@ -156,9 +157,9 @@ Navigate with `↑`/`↓`. Single-letter keys fire actions on the highlighted ma
 
 On first launch with no config file, the picker shows a banner offering `Ctrl-W` to write a default `~/.config/zellij/zextract.kdl`.
 
-See the full [config reference](docs/config-reference.md) for every key, type, default, and example.
+See the full [config reference](doc/config-reference.md) for every key, type, default, and example.
 
-For customization walkthroughs (custom editor, JIRA patterns, GitHub PR patterns) see the [customization guide](docs/customization.md).
+For customization walkthroughs (custom editor, JIRA patterns, GitHub PR patterns) see the [customization guide](doc/customization.md).
 
 Full example with all sections:
 
@@ -344,6 +345,45 @@ Set `log_level "debug"` in `zextract.kdl` and tail the Zellij log:
 ```sh
 tail -f ~/Library/Logs/net.Zellij-Contributors.Zellij/zellij.log | grep zextract
 ```
+
+---
+
+## Pattern detection and false positives
+
+Pattern detection is inherently approximate. The goal of zextract is not
+100% precision — it is to surface **good candidates fast** so you can pick
+the one you want in fewer keystrokes than typing or copying manually.
+
+Well-defined types like URLs, UUIDs, and IPv4 addresses have tight syntax
+and produce very few false positives. Weakly-defined types like `cmd`
+(command) are intentionally broad: a command can be any token sequence, so
+the pattern relies on heuristics (prompt markers, known executable names,
+flag-anchored detection) that will occasionally match non-commands.
+
+**What to expect:**
+
+- `url`, `uuid`, `ipv4`, `sha` — high precision, rare false positives
+- `file`, `diag` — moderate; depends on how much path-like text is in your scrollback
+- `cmd` — lower precision by design; expect some noise, especially with
+  `flag_anchored true` enabled
+- `secret` — entropy-based fallback intentionally over-matches; filter with `#secret`
+  when you need it, keep it off the main view otherwise
+
+**The workflow this enables:**
+
+Open the picker, type a few characters to narrow down, pick. Even with
+occasional false positives in the list, narrowing a 50-match list to 3
+candidates with a two-character query is faster than reaching for the mouse
+or retyping a long path. The fuzzy scorer ranks genuine matches above noise
+in most cases.
+
+**Reducing noise:**
+
+- Use `#cmd`, `#url` etc. in the query to restrict to a single type
+- Use `#!cmd` to exclude a noisy type entirely
+- The `cmd` type's `flag_anchored` mode (off by default) is the main source
+  of false positives — only enable it if you regularly see commands in output
+  lines that aren't caught by prompt markers or the trigger-word list
 
 ---
 

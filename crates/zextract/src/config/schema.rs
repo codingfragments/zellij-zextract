@@ -357,7 +357,20 @@ pub struct TypeOverride {
 /// User-defined custom regex patterns from the `patterns { }` block.
 #[derive(Debug, Clone, Default)]
 pub struct PatternsConfig {
+    pub command: CommandPatternConfig,
     pub custom: Vec<CustomPattern>,
+}
+
+/// Built-in command-pattern tuning, under `patterns { command { ... } }`.
+#[derive(Debug, Clone, Default)]
+pub struct CommandPatternConfig {
+    /// Opt-in heuristic: lines that contain a `-x`/`-xyz`/`--long` style
+    /// argument are scanned for a command word by walking back to the
+    /// nearest boundary character (`][}{><:;|&`). Off by default because
+    /// it produces false positives on prose that incidentally contains
+    /// flag-looking tokens. Enable when you want to catch commands that
+    /// don't appear after a prompt marker and aren't in the trigger list.
+    pub flag_anchored: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -378,6 +391,16 @@ pub struct CustomPattern {
 
 fn parse_patterns_block(nodes: &[Node], patterns: &mut PatternsConfig) {
     for pat_node in nodes {
+        if pat_node.name == "command" {
+            for child in &pat_node.children {
+                if child.name == "flag_anchored" {
+                    if let Some(b) = child.args.first().and_then(|v| v.as_bool()) {
+                        patterns.command.flag_anchored = b;
+                    }
+                }
+            }
+            continue;
+        }
         let name = pat_node.name.clone();
         let mut regex: Option<String> = None;
         let mut ty = "url".to_string();
