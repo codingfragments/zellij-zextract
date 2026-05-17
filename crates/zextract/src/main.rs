@@ -286,9 +286,14 @@ impl Default for State {
     fn default() -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
+        // Log at Debug until the user's config file is read — early events
+        // (PaneUpdate, PermissionRequestResult) would otherwise be silenced
+        // by the default Info threshold before config loads.
+        let mut config = Config::default();
+        config.log_level = LogLevel::Debug;
         Self {
             config_loaded: false,
-            config: Config::default(),
+            config,
             matches: Vec::new(),
             captured_text: String::new(),
             query: String::new(),
@@ -445,6 +450,14 @@ impl ZellijPlugin for State {
                     }
                 }
                 let new_source = source_pane::pick(&manifest, self.last_focused_non_plugin);
+                plog!(
+                    self,
+                    LogLevel::Debug,
+                    "PaneUpdate: last_focused_hint={:?} picked={:?} current={:?}",
+                    self.last_focused_non_plugin,
+                    new_source,
+                    self.source_pane,
+                );
                 let was_some = self.source_pane.is_some();
                 let changed = new_source.is_some() && self.source_pane != new_source;
                 if changed {
