@@ -10,6 +10,15 @@ Format: short bullet per item, dated, with file pointer when known.
 
 ## Open
 
+- **(2026-05-17) Command pattern false positives.** The `cmd` pattern
+  fires too broadly — executable-anchored matches (trigger list: `sudo`,
+  `curl`, `git`, `kubectl`, etc.) produce false positives in prose and
+  log output where those words appear without being actual commands.
+  Needs a review of the trigger list, tighter anchor rules (e.g. require
+  start-of-line or prompt context), and possibly a confidence threshold
+  before surfacing as a `cmd` match.
+  File: `crates/zextract/src/pattern/command.rs`.
+
 - **(2026-05-16) Mouse click on grab indicator should cycle profiles.**
   The `[quick]` label outside the input box is visible but not clickable.
   zellij-tile 0.44.3 has no `EventType::Mouse` for plugins.
