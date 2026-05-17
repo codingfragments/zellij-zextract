@@ -362,7 +362,7 @@ pub struct PatternsConfig {
 }
 
 /// Built-in command-pattern tuning, under `patterns { command { ... } }`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CommandPatternConfig {
     /// Opt-in heuristic: lines that contain a `-x`/`-xyz`/`--long` style
     /// argument are scanned for a command word by walking back to the
@@ -371,12 +371,6 @@ pub struct CommandPatternConfig {
     /// flag-looking tokens. Enable when you want to catch commands that
     /// don't appear after a prompt marker and aren't in the trigger list.
     pub flag_anchored: bool,
-}
-
-impl Default for CommandPatternConfig {
-    fn default() -> Self {
-        Self { flag_anchored: false }
-    }
 }
 
 #[derive(Debug, Clone)]
