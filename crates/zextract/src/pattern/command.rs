@@ -86,11 +86,13 @@ const TRIGGERS: &[&str] = &[
     "git",
     "hg",
     "svn",
-    // Containers / orchestration
+    // Containers / orchestration / multiplexers
     "docker",
     "podman",
     "kubectl",
     "helm",
+    "zellij",
+    "tmux",
     // Language runners
     "python",
     "python3",
@@ -457,5 +459,20 @@ mod tests {
         let m = extract("Run sh -c 'foo' please");
         assert_eq!(m.len(), 1);
         assert!(m[0].raw.starts_with("sh"));
+    }
+
+    #[test]
+    fn zellij_exec_anchored_in_output() {
+        // `[dry-run]` is not a prompt — exec-anchored must catch zellij.
+        let m = extract("[dry-run] zellij --session claude-chats --layout cfdefault.kdl");
+        assert_eq!(m.len(), 1);
+        assert!(m[0].raw.starts_with("zellij --session"));
+    }
+
+    #[test]
+    fn tmux_exec_anchored() {
+        let m = extract("running: tmux new-session -s main");
+        assert_eq!(m.len(), 1);
+        assert!(m[0].raw.starts_with("tmux new-session"));
     }
 }
