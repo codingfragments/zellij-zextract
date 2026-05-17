@@ -242,6 +242,12 @@ struct State {
     /// Cleared on picker close.
     selected: HashSet<usize>,
     source_pane: Option<u32>,
+    /// The non-plugin pane most recently seen as `is_focused` in any
+    /// PaneUpdate. Updated continuously while the plugin runs in the
+    /// background. When the keybind fires and the plugin steals focus,
+    /// no non-plugin pane is focused in subsequent PaneUpdates — so
+    /// `pick()` falls back to this hint instead of an arbitrary pane.
+    last_focused_non_plugin: Option<u32>,
     /// Our own plugin's pane id, used to call
     /// `change_floating_panes_coordinates` when the preview toggles
     /// (grows the pane to make room).
@@ -292,6 +298,7 @@ impl Default for State {
             list_state,
             selected: HashSet::new(),
             source_pane: None,
+            last_focused_non_plugin: None,
             own_plugin_id: 0,
             current_grab_profile_index: 0,
             extraction_done: false,
@@ -426,7 +433,18 @@ impl ZellijPlugin for State {
                 true
             }
             Event::PaneUpdate(manifest) => {
-                let new_source = source_pane::pick(&manifest);
+                // Update the hint BEFORE calling pick() — if a non-plugin
+                // pane is focused in this snapshot, record it. Once the
+                // plugin steals focus the terminal pane becomes unfocused,
+                // but pick() will use this hint to find it.
+                for panes in manifest.panes.values() {
+                    for pane in panes {
+                        if !pane.is_plugin && pane.is_focused {
+                            self.last_focused_non_plugin = Some(pane.id);
+                        }
+                    }
+                }
+                let new_source = source_pane::pick(&manifest, self.last_focused_non_plugin);
                 let was_some = self.source_pane.is_some();
                 let changed = new_source.is_some() && self.source_pane != new_source;
                 if changed {
