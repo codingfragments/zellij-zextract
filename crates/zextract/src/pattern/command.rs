@@ -24,6 +24,14 @@ const MAX_CONTINUATION_LINES: usize = 10;
 /// single-word or near-empty matches (e.g. bare `❯` lines, lone `$`).
 const MIN_COMMAND_LEN: usize = 5;
 
+/// Returns true if `s` looks like a plausible command — must contain at
+/// least one ASCII letter. Rejects pure-numeric/punctuation strings such
+/// as fish's right-aligned timestamp (`18:48:12`) that bleed onto an
+/// otherwise empty prompt line in the terminal scrollback.
+fn looks_like_command(s: &str) -> bool {
+    s.trim().len() >= MIN_COMMAND_LEN && s.trim().chars().any(|c| c.is_ascii_alphabetic())
+}
+
 /// Default prompt markers. Configurable via KDL in Phase 7.
 const PROMPT_MARKERS: &[&str] = &["❯ ", "$ ", "> ", "% ", "# "];
 
@@ -185,7 +193,7 @@ pub fn extract(text: &str) -> Vec<Match> {
             if !cmd_after_prompt.trim().is_empty() {
                 let (full_cmd, context, lines_consumed) =
                     splice_continuation(&lines, i, cmd_after_prompt);
-                if full_cmd.trim().len() >= MIN_COMMAND_LEN {
+                if looks_like_command(&full_cmd) {
                     let span_start = line_offsets[i] + prompt_len;
                     let span_end = if lines_consumed == 1 {
                         span_start + cmd_after_prompt.len()
@@ -203,7 +211,7 @@ pub fn extract(text: &str) -> Vec<Match> {
         if let Some(start_col) = match_exec(line) {
             let cmd = &line[start_col..];
             let trimmed = cmd.trim_end();
-            if trimmed.len() >= MIN_COMMAND_LEN {
+            if looks_like_command(trimmed) {
                 let span_start = line_offsets[i] + start_col;
                 let span_end = span_start + trimmed.len();
                 out.push(make_match(
@@ -423,7 +431,7 @@ pub fn extract_flag_anchored(text: &str) -> Vec<Match> {
             continue;
         };
         let trimmed = line[start..].trim_end();
-        if trimmed.len() < MIN_COMMAND_LEN {
+        if !looks_like_command(trimmed) {
             continue;
         }
         let span_start = line_offsets[i] + start;
@@ -668,12 +676,21 @@ mod tests {
     }
 
     #[test]
-    fn min_length_filters_short_commands() {
-        // Bare prompt lines with no command, or trivially short commands,
-        // must not produce matches.
-        assert!(extract("❯ ls").is_empty(), "4 chars should be filtered");
-        assert!(extract("$ cd ~").is_empty(), "5 chars but 'cd ~' is 4 after prompt strip");
-        assert!(!extract("❯ git status").is_empty(), "long enough");
+    fn min_length_and_alpha_filter() {
+        // Too short.
+        assert!(extract("❯ ls").is_empty());
+        // No alphabetic chars — fish right-prompt timestamp on an empty prompt.
+        assert!(
+            extract("❯                                                   18:48:12").is_empty(),
+            "empty prompt with timestamp should not match"
+        );
+        assert!(
+            extract("❯                                                   18:48:49").is_empty(),
+            "second empty prompt with timestamp should not match"
+        );
+        // Real commands still match.
+        assert!(!extract("❯ git status").is_empty());
+        assert!(!extract("❯ cat /tmp/test").is_empty());
     }
 
     #[test]
