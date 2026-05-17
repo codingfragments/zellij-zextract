@@ -324,6 +324,116 @@ fn strip_leading<'a>(line: &'a str, patterns: &[Regex]) -> &'a str {
     line
 }
 
+// ---- Flag-anchored detection ----
+
+/// Boundary bytes that end a context prefix and start a new command context.
+const FLAG_BOUNDARY: &[u8] = b"]})[{><:;|&(,'\"";
+
+fn flag_anchor_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // Matches --long-flag or -x / -xyz (combined short flags).
+        // First char after `-` must be alphabetic — rejects negative
+        // numbers (-42) and ranges (-1..5).
+        Regex::new(r"(?:--[a-zA-Z][\w-]*|-[a-zA-Z]\w*)").expect("flag anchor regex")
+    })
+}
+
+/// A byte may precede a standalone flag token (`-x`, `--foo`) only if it
+/// signals a word boundary in a command context. This rejects flags that
+/// are embedded in compound words like `dry-run` or `some-file`, where
+/// the preceding byte is an alphanumeric letter.
+fn ok_flag_preceding_byte(b: Option<u8>) -> bool {
+    match b {
+        None => true,
+        Some(c) if c.is_ascii_whitespace() => true,
+        Some(b'(' | b'&' | b'|' | b';' | b'=') => true,
+        _ => false,
+    }
+}
+
+/// Opt-in: find the byte column where a flag-anchored command starts on
+/// `line`, or `None` if the line doesn't qualify.
+fn flag_anchored_start(line: &str) -> Option<usize> {
+    let re = flag_anchor_regex();
+
+    // Find the leftmost flag that looks like a standalone argument — not
+    // embedded in a compound word like `dry-run` or `some-file`.
+    let flag_match = re.find_iter(line).find(|m| {
+        let prev = (m.start() > 0).then(|| line.as_bytes()[m.start() - 1]);
+        ok_flag_preceding_byte(prev)
+    })?;
+
+    // Walk backward through the prefix to find the last boundary char.
+    let prefix = &line[..flag_match.start()];
+    let cmd_start = prefix
+        .as_bytes()
+        .iter()
+        .rposition(|&b| FLAG_BOUNDARY.contains(&b))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    // Skip leading whitespace after the boundary.
+    let cmd_start = cmd_start
+        + line[cmd_start..]
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .map(|c| c.len_utf8())
+            .sum::<usize>();
+
+    let first_char = line[cmd_start..].chars().next()?;
+
+    // Guard: first char must be lowercase ASCII.
+    //   - Rejects flag-first lines (`--option val`) where first char is `-`
+    //   - Rejects prose starting uppercase (`The --flag`) → `T` fails
+    //   - Rejects non-ASCII prompt chars (`❯`) → multi-byte, not ascii_lowercase
+    if !first_char.is_ascii_lowercase() {
+        return None;
+    }
+
+    // Guard: first word must be at least 2 chars (avoids lone-letter noise).
+    let word_end = cmd_start
+        + line[cmd_start..]
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(line.len() - cmd_start);
+    if word_end - cmd_start < 2 {
+        return None;
+    }
+
+    Some(cmd_start)
+}
+
+/// Opt-in pass: extract commands anchored by a flag argument rather than a
+/// prompt marker or trigger word. Skips prompt-anchored lines to avoid
+/// producing a redundant match alongside the prompt-anchored result.
+pub fn extract_flag_anchored(text: &str) -> Vec<Match> {
+    let lines: Vec<&str> = text.lines().collect();
+    let line_offsets = compute_line_offsets(&lines);
+    let mut out = Vec::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        if match_prompt(line).is_some() {
+            continue; // already handled by prompt-anchored path
+        }
+        let Some(start) = flag_anchored_start(line) else {
+            continue;
+        };
+        let trimmed = line[start..].trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let span_start = line_offsets[i] + start;
+        let span_end = span_start + trimmed.len();
+        out.push(make_match(
+            trimmed.to_string(),
+            line.to_string(),
+            span_start,
+            span_end,
+        ));
+    }
+    out
+}
+
 fn make_match(raw: String, context: String, span_start: usize, span_end: usize) -> Match {
     let mut fields = HashMap::new();
     fields.insert("match".to_string(), raw.clone());
@@ -474,5 +584,90 @@ mod tests {
         let m = extract("running: tmux new-session -s main");
         assert_eq!(m.len(), 1);
         assert!(m[0].raw.starts_with("tmux new-session"));
+    }
+
+    // ---- flag-anchored tests ----
+
+    #[test]
+    fn flag_anchored_bracket_prefix() {
+        let m = extract_flag_anchored("[dry-run] zellij --session foo --layout bar.kdl");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "zellij --session foo --layout bar.kdl");
+    }
+
+    #[test]
+    fn flag_anchored_colon_prefix() {
+        let m = extract_flag_anchored("output: cargo build --release --target wasm32");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "cargo build --release --target wasm32");
+    }
+
+    #[test]
+    fn flag_anchored_no_prefix() {
+        let m = extract_flag_anchored("rsync -avz src/ dest/");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "rsync -avz src/ dest/");
+    }
+
+    #[test]
+    fn flag_anchored_rejects_uppercase_start() {
+        let m = extract_flag_anchored("The --verbose flag was deprecated");
+        assert!(m.is_empty(), "false positive: {m:?}");
+    }
+
+    #[test]
+    fn flag_anchored_rejects_flag_first() {
+        let m = extract_flag_anchored("--option value");
+        assert!(m.is_empty(), "false positive: {m:?}");
+    }
+
+    #[test]
+    fn flag_anchored_skips_prompt_lines() {
+        // Prompt-anchored handles these; flag-anchored must not produce a
+        // second match with a different (shorter) raw value.
+        assert!(extract_flag_anchored("❯ cargo build --release").is_empty());
+        assert!(extract_flag_anchored("$ git push --force-with-lease").is_empty());
+    }
+
+    #[test]
+    fn flag_anchored_short_flag() {
+        let m = extract_flag_anchored("[info] ssh -i ~/.ssh/id_ed25519 user@host");
+        assert_eq!(m.len(), 1);
+        assert!(m[0].raw.starts_with("ssh -i"));
+    }
+
+    #[test]
+    fn flag_anchored_dry_run_inner_dash_not_a_flag() {
+        // `dry-run` contains `-run` but it is inside brackets and preceded
+        // by `y` (not whitespace) — must not be treated as a flag start.
+        // The real flag `--session` should anchor the match instead.
+        let m = extract_flag_anchored("[dry-run] zellij --session foo");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "zellij --session foo");
+    }
+
+    #[test]
+    fn flag_anchored_via_extract_with_config() {
+        use crate::config::schema::{CommandPatternConfig, PatternsConfig};
+        let patterns = PatternsConfig {
+            command: CommandPatternConfig { flag_anchored: true },
+            ..PatternsConfig::default()
+        };
+        let text = "[dry-run] zellij --session foo --layout bar.kdl";
+        let matches = crate::extract::extract(text, &patterns);
+        let cmds: Vec<_> = matches
+            .iter()
+            .filter(|m| m.ty == crate::extract::MatchType::Command)
+            .collect();
+        assert!(!cmds.is_empty());
+        assert!(cmds.iter().any(|m| m.raw.starts_with("zellij --session")));
+    }
+
+    #[test]
+    fn flag_anchored_off_by_default() {
+        use crate::config::schema::PatternsConfig;
+        // With default config (flag_anchored false), zellij IS in triggers
+        // so exec-anchored still catches it — but flag-anchored path is off.
+        assert!(!PatternsConfig::default().command.flag_anchored);
     }
 }
