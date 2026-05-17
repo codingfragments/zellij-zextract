@@ -828,4 +828,46 @@ mod tests {
         let capped = take_recent(text, 50);
         assert_eq!(capped, text);
     }
+
+    // ── Custom pattern priority test ──────────────────────────────────────
+    // This test documents the v1 behaviour (built-in file pattern wins on
+    // overlap) and the expected v2 behaviour (user-controlled priority).
+
+    #[test]
+    fn router_pattern_extracts_path_from_url() {
+        use crate::config::schema::CustomPattern;
+
+        let patterns = PatternsConfig {
+            custom: vec![CustomPattern {
+                name: "router".to_string(),
+                regex: r"router\.com/([^/\s]+)".to_string(),
+                ty: "cmd".to_string(),
+                template: Some("Routing path {1}".to_string()),
+            }],
+        };
+
+        let text = "Request failed at http://example.router.com/tester";
+        let matches = extract(text, &patterns);
+
+        // Custom pattern fires: group 1 = "tester", template expanded.
+        let router_match = matches
+            .iter()
+            .find(|m| m.label.as_deref() == Some("router"));
+        let router_match = router_match.expect("router pattern did not match");
+        assert_eq!(router_match.fields.get("1").unwrap(), "tester");
+        assert_eq!(router_match.display, "Routing path tester");
+        assert_eq!(router_match.raw, "Routing path tester"); // template present → raw = expanded
+
+        // Priority observation (v1 behaviour):
+        // The built-in URL pattern also matches "http://example.router.com/tester"
+        // and the built-in file pattern matches "router.com/tester".
+        // These have DIFFERENT raw values from the custom match so they
+        // all survive dedup and appear alongside the router entry.
+        // In v2 a user-controlled `priority` list would let the router
+        // pattern suppress the file match for the same span.
+        let url_match = matches
+            .iter()
+            .find(|m| m.ty == MatchType::Url && m.label.is_none());
+        assert!(url_match.is_some(), "built-in url match should also appear");
+    }
 }
