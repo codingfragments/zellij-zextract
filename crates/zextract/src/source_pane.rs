@@ -57,7 +57,7 @@ pub fn pick(manifest: &PaneManifest, hint: Option<u32>) -> Option<u32> {
     }
 
     focused_non_plugin
-        .or_else(|| if hint_exists { hint } else { None })
+        .or(if hint_exists { hint } else { None })
         .or(first_tiled)
         .or(first_any)
 }

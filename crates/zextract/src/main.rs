@@ -286,14 +286,15 @@ impl Default for State {
     fn default() -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
-        // Log at Debug until the user's config file is read — early events
-        // (PaneUpdate, PermissionRequestResult) would otherwise be silenced
-        // by the default Info threshold before config loads.
-        let mut config = Config::default();
-        config.log_level = LogLevel::Debug;
         Self {
             config_loaded: false,
-            config,
+            // Log at Debug until the user's config file is read — early events
+            // (PaneUpdate, PermissionRequestResult) would otherwise be silenced
+            // by the default Info threshold before config loads.
+            config: Config {
+                log_level: LogLevel::Debug,
+                ..Config::default()
+            },
             matches: Vec::new(),
             captured_text: String::new(),
             query: String::new(),
