@@ -662,7 +662,9 @@ mod tests {
     fn flag_anchored_via_extract_with_config() {
         use crate::config::schema::{CommandPatternConfig, PatternsConfig};
         let patterns = PatternsConfig {
-            command: CommandPatternConfig { flag_anchored: true },
+            command: CommandPatternConfig {
+                flag_anchored: true,
+            },
             ..PatternsConfig::default()
         };
         let text = "[dry-run] zellij --session foo --layout bar.kdl";
