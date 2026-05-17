@@ -451,13 +451,9 @@ impl ZellijPlugin for State {
                 changed || (was_some && new_source.is_none())
             }
             Event::Key(key) => self.handle_key(key),
-            Event::Timer(_) => {
-                if self.message.is_some() {
-                    self.message = None;
-                    true
-                } else {
-                    false
-                }
+            Event::Timer(_) if self.message.is_some() => {
+                self.message = None;
+                true
             }
             _ => false,
         }
