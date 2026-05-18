@@ -358,6 +358,7 @@ pub struct TypeOverride {
 #[derive(Debug, Clone, Default)]
 pub struct PatternsConfig {
     pub command: CommandPatternConfig,
+    pub secret: SecretPatternConfig,
     pub custom: Vec<CustomPattern>,
 }
 
@@ -371,6 +372,24 @@ pub struct CommandPatternConfig {
     /// flag-looking tokens. Enable when you want to catch commands that
     /// don't appear after a prompt marker and aren't in the trigger list.
     pub flag_anchored: bool,
+}
+
+/// Built-in secret-pattern tuning, under `patterns { secret { ... } }`.
+#[derive(Debug, Clone)]
+pub struct SecretPatternConfig {
+    /// When true (default), tokens not matched by any curated format are
+    /// subjected to length + character-class + Shannon-entropy checks before
+    /// being emitted as secrets. Set to false to disable the entropy fallback
+    /// entirely — only curated formats (JWT, AWS, GitHub, …) fire.
+    pub entropy_filter: bool,
+}
+
+impl Default for SecretPatternConfig {
+    fn default() -> Self {
+        Self {
+            entropy_filter: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -396,6 +415,16 @@ fn parse_patterns_block(nodes: &[Node], patterns: &mut PatternsConfig) {
                 if child.name == "flag_anchored" {
                     if let Some(b) = child.args.first().and_then(|v| v.as_bool()) {
                         patterns.command.flag_anchored = b;
+                    }
+                }
+            }
+            continue;
+        }
+        if pat_node.name == "secret" {
+            for child in &pat_node.children {
+                if child.name == "entropy_filter" {
+                    if let Some(b) = child.args.first().and_then(|v| v.as_bool()) {
+                        patterns.secret.entropy_filter = b;
                     }
                 }
             }
@@ -851,6 +880,42 @@ mod tests {
     fn patterns_default_empty() {
         let config = Config::from_ast(&[]);
         assert!(config.patterns.custom.is_empty());
+    }
+
+    #[test]
+    fn patterns_secret_entropy_filter_default_on() {
+        let config = Config::from_ast(&[]);
+        assert!(config.patterns.secret.entropy_filter);
+    }
+
+    #[test]
+    fn patterns_secret_entropy_filter_can_be_disabled() {
+        let nodes = parse::parse(
+            r#"patterns { secret { entropy_filter false } }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert!(!config.patterns.secret.entropy_filter);
+    }
+
+    #[test]
+    fn patterns_secret_entropy_filter_explicit_true() {
+        let nodes = parse::parse(
+            r#"patterns { secret { entropy_filter true } }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert!(config.patterns.secret.entropy_filter);
+    }
+
+    #[test]
+    fn patterns_secret_unknown_inner_keys_ignored() {
+        let nodes = parse::parse(
+            r#"patterns { secret { entropy_filter false future_key "x" } }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert!(!config.patterns.secret.entropy_filter);
     }
 
     #[test]

@@ -151,7 +151,7 @@ pub fn extract(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
     if patterns.command.flag_anchored {
         all.extend(crate::pattern::command::extract_flag_anchored(text));
     }
-    all.extend(crate::pattern::secret::extract(text));
+    all.extend(crate::pattern::secret::extract(text, &patterns.secret));
     all.extend(extract_custom(text, patterns));
 
     let pass1 = dedup_keep_latest(all);
