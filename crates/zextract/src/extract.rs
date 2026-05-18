@@ -147,9 +147,9 @@ pub fn extract(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
     all.extend(crate::pattern::ipv6::extract(text));
     all.extend(crate::pattern::uuid::extract(text));
     all.extend(crate::pattern::quoted::extract(text));
-    all.extend(crate::pattern::command::extract(text));
+    all.extend(crate::pattern::command::extract(text, &patterns.command));
     if patterns.command.flag_anchored {
-        all.extend(crate::pattern::command::extract_flag_anchored(text));
+        all.extend(crate::pattern::command::extract_flag_anchored(text, &patterns.command));
     }
     all.extend(crate::pattern::secret::extract(text, &patterns.secret));
     all.extend(extract_custom(text, patterns));

@@ -16,6 +16,7 @@ use std::sync::OnceLock;
 
 use regex_lite::Regex;
 
+use crate::config::schema::CommandPatternConfig;
 use crate::extract::{Match, MatchType};
 
 const MAX_CONTINUATION_LINES: usize = 10;
@@ -176,7 +177,7 @@ fn regex_escape(s: &str) -> String {
         .collect()
 }
 
-pub fn extract(text: &str) -> Vec<Match> {
+pub fn extract(text: &str, cfg: &CommandPatternConfig) -> Vec<Match> {
     let lines: Vec<&str> = text.lines().collect();
     let line_offsets: Vec<usize> = compute_line_offsets(&lines);
 
@@ -190,7 +191,7 @@ pub fn extract(text: &str) -> Vec<Match> {
 
         // 1. PROMPT-ANCHORED.
         if let Some((prompt_len, cmd_after_prompt)) = match_prompt(line) {
-            let cmd_after_prompt = trim_rprompt(cmd_after_prompt);
+            let cmd_after_prompt = trim_rprompt(cmd_after_prompt, cfg.rprompt_min_spaces);
             if !cmd_after_prompt.trim().is_empty() {
                 let (full_cmd, context, lines_consumed) =
                     splice_continuation(&lines, i, cmd_after_prompt);
@@ -211,7 +212,7 @@ pub fn extract(text: &str) -> Vec<Match> {
         // 2. EXEC-ANCHORED (fallback). No continuation splice — too risky in prose.
         if let Some(start_col) = match_exec(line) {
             let cmd = &line[start_col..];
-            let trimmed = trim_rprompt(cmd).trim_end();
+            let trimmed = trim_rprompt(cmd, cfg.rprompt_min_spaces).trim_end();
             if looks_like_command(trimmed) {
                 let span_start = line_offsets[i] + start_col;
                 let span_end = span_start + trimmed.len();
@@ -326,15 +327,26 @@ fn ends_with_continuation(s: &str) -> bool {
     s.trim_end().ends_with('\\')
 }
 
-/// Truncate `s` at the first run of two or more consecutive ASCII whitespace
-/// characters. Fish/zsh right-side prompts (timestamps, git status) are pushed
-/// to the right edge with a wide column of spaces — two spaces in a row never
-/// appear inside a real command token, so this is a safe cut point.
-fn trim_rprompt(s: &str) -> &str {
+/// Truncate `s` at the first run of `min_spaces` or more consecutive ASCII
+/// whitespace characters. Fish/zsh right-side prompts (timestamps, git status)
+/// are pushed to the right edge with a wide column of spaces; `min_spaces`
+/// controls how many spaces in a row constitute a cut point. Default (5) avoids
+/// false positives on double-spaced output like `git diff --stat` while still
+/// reliably catching rprompts.
+fn trim_rprompt(s: &str, min_spaces: usize) -> &str {
+    if min_spaces == 0 {
+        return s;
+    }
     let b = s.as_bytes();
-    for i in 0..b.len().saturating_sub(1) {
-        if b[i].is_ascii_whitespace() && b[i + 1].is_ascii_whitespace() {
-            return &s[..i];
+    let mut run = 0usize;
+    for (i, &byte) in b.iter().enumerate() {
+        if byte.is_ascii_whitespace() {
+            run += 1;
+            if run >= min_spaces {
+                return &s[..i + 1 - run];
+            }
+        } else {
+            run = 0;
         }
     }
     s
@@ -433,7 +445,7 @@ fn flag_anchored_start(line: &str) -> Option<usize> {
 /// Opt-in pass: extract commands anchored by a flag argument rather than a
 /// prompt marker or trigger word. Skips prompt-anchored lines to avoid
 /// producing a redundant match alongside the prompt-anchored result.
-pub fn extract_flag_anchored(text: &str) -> Vec<Match> {
+pub fn extract_flag_anchored(text: &str, cfg: &CommandPatternConfig) -> Vec<Match> {
     let lines: Vec<&str> = text.lines().collect();
     let line_offsets = compute_line_offsets(&lines);
     let mut out = Vec::new();
@@ -445,7 +457,7 @@ pub fn extract_flag_anchored(text: &str) -> Vec<Match> {
         let Some(start) = flag_anchored_start(line) else {
             continue;
         };
-        let trimmed = trim_rprompt(&line[start..]).trim_end();
+        let trimmed = trim_rprompt(&line[start..], cfg.rprompt_min_spaces).trim_end();
         if !looks_like_command(trimmed) {
             continue;
         }
@@ -479,30 +491,34 @@ fn make_match(raw: String, context: String, span_start: usize, span_end: usize) 
 mod tests {
     use super::*;
 
+    fn def() -> CommandPatternConfig {
+        CommandPatternConfig::default()
+    }
+
     #[test]
     fn prompt_anchored_simple() {
-        let m = extract("$ git log --oneline -n 20");
+        let m = extract("$ git log --oneline -n 20", &def());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "git log --oneline -n 20");
     }
 
     #[test]
     fn prompt_anchored_unicode() {
-        let m = extract("❯ cargo build --release");
+        let m = extract("❯ cargo build --release", &def());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "cargo build --release");
     }
 
     #[test]
     fn exec_anchored_in_prose() {
-        let m = extract("To install run sudo apt install zellij from the README.");
+        let m = extract("To install run sudo apt install zellij from the README.", &def());
         assert_eq!(m.len(), 1);
         assert!(m[0].raw.starts_with("sudo apt install zellij"));
     }
 
     #[test]
     fn exec_anchored_pipeline_kept_together() {
-        let m = extract("curl -fsSL https://example.com/install.sh | sudo bash");
+        let m = extract("curl -fsSL https://example.com/install.sh | sudo bash", &def());
         assert_eq!(m.len(), 1);
         // Full pipeline captured as one match.
         assert!(m[0].raw.contains("curl"));
@@ -512,7 +528,7 @@ mod tests {
     #[test]
     fn continuation_splicing_basic() {
         let text = "$ curl -fsSL https://example.com/install.sh \\\n    | sudo bash";
-        let m = extract(text);
+        let m = extract(text, &def());
         assert_eq!(m.len(), 1);
         // The trailing backslash and leading whitespace on line 2 are stripped.
         assert_eq!(
@@ -524,7 +540,7 @@ mod tests {
     #[test]
     fn continuation_strips_line_number_prefix() {
         let text = "$ curl -fsSL https://example.com/install.sh \\\n2:  | sudo bash";
-        let m = extract(text);
+        let m = extract(text, &def());
         assert_eq!(m.len(), 1);
         assert_eq!(
             m[0].raw,
@@ -535,7 +551,7 @@ mod tests {
     #[test]
     fn continuation_strips_diff_marker() {
         let text = "$ curl -fsSL https://example.com/install.sh \\\n+   | sudo bash";
-        let m = extract(text);
+        let m = extract(text, &def());
         assert_eq!(
             m[0].raw,
             "curl -fsSL https://example.com/install.sh | sudo bash"
@@ -550,7 +566,7 @@ mod tests {
             text.push_str("\n  hello \\");
         }
         text.push_str("\n  final");
-        let m = extract(&text);
+        let m = extract(&text, &def());
         assert_eq!(m.len(), 1);
         // Cap means not all 12 lines are spliced.
         let backslash_count = m[0].raw.matches('\\').count();
@@ -560,7 +576,7 @@ mod tests {
 
     #[test]
     fn prompt_wins_over_exec_on_same_line() {
-        let m = extract("❯ sudo apt install foo");
+        let m = extract("❯ sudo apt install foo", &def());
         // Only one match, prompt-anchored.
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "sudo apt install foo");
@@ -568,7 +584,7 @@ mod tests {
 
     #[test]
     fn no_match_in_random_prose() {
-        let m = extract("the quick brown fox jumps over the lazy dog");
+        let m = extract("the quick brown fox jumps over the lazy dog", &def());
         assert!(m.is_empty());
     }
 
@@ -576,7 +592,7 @@ mod tests {
     fn rejects_trigger_inside_filename() {
         // `sh` inside `install.sh` must NOT trigger the command pattern —
         // the trigger is preceded by `.`, signaling a file extension.
-        let m = extract("Downloaded install.sh from the mirror");
+        let m = extract("Downloaded install.sh from the mirror", &def());
         assert!(m.is_empty(), "false positive: {m:?}");
     }
 
@@ -587,13 +603,13 @@ mod tests {
         // /bin/sh via the full path, and our trigger list has it
         // explicitly, so this is about the bare `sh` at the END of an
         // arbitrary path, not the literal /bin/sh form.
-        let m = extract("path/to/sh detected");
+        let m = extract("path/to/sh detected", &def());
         assert!(m.is_empty(), "false positive: {m:?}");
     }
 
     #[test]
     fn still_triggers_after_space() {
-        let m = extract("Run sh -c 'foo' please");
+        let m = extract("Run sh -c 'foo' please", &def());
         assert_eq!(m.len(), 1);
         assert!(m[0].raw.starts_with("sh"));
     }
@@ -601,14 +617,14 @@ mod tests {
     #[test]
     fn zellij_exec_anchored_in_output() {
         // `[dry-run]` is not a prompt — exec-anchored must catch zellij.
-        let m = extract("[dry-run] zellij --session claude-chats --layout cfdefault.kdl");
+        let m = extract("[dry-run] zellij --session claude-chats --layout cfdefault.kdl", &def());
         assert_eq!(m.len(), 1);
         assert!(m[0].raw.starts_with("zellij --session"));
     }
 
     #[test]
     fn tmux_exec_anchored() {
-        let m = extract("running: tmux new-session -s main");
+        let m = extract("running: tmux new-session -s main", &def());
         assert_eq!(m.len(), 1);
         assert!(m[0].raw.starts_with("tmux new-session"));
     }
@@ -617,34 +633,34 @@ mod tests {
 
     #[test]
     fn flag_anchored_bracket_prefix() {
-        let m = extract_flag_anchored("[dry-run] zellij --session foo --layout bar.kdl");
+        let m = extract_flag_anchored("[dry-run] zellij --session foo --layout bar.kdl", &def());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "zellij --session foo --layout bar.kdl");
     }
 
     #[test]
     fn flag_anchored_colon_prefix() {
-        let m = extract_flag_anchored("output: cargo build --release --target wasm32");
+        let m = extract_flag_anchored("output: cargo build --release --target wasm32", &def());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "cargo build --release --target wasm32");
     }
 
     #[test]
     fn flag_anchored_no_prefix() {
-        let m = extract_flag_anchored("rsync -avz src/ dest/");
+        let m = extract_flag_anchored("rsync -avz src/ dest/", &def());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "rsync -avz src/ dest/");
     }
 
     #[test]
     fn flag_anchored_rejects_uppercase_start() {
-        let m = extract_flag_anchored("The --verbose flag was deprecated");
+        let m = extract_flag_anchored("The --verbose flag was deprecated", &def());
         assert!(m.is_empty(), "false positive: {m:?}");
     }
 
     #[test]
     fn flag_anchored_rejects_flag_first() {
-        let m = extract_flag_anchored("--option value");
+        let m = extract_flag_anchored("--option value", &def());
         assert!(m.is_empty(), "false positive: {m:?}");
     }
 
@@ -652,13 +668,13 @@ mod tests {
     fn flag_anchored_skips_prompt_lines() {
         // Prompt-anchored handles these; flag-anchored must not produce a
         // second match with a different (shorter) raw value.
-        assert!(extract_flag_anchored("❯ cargo build --release").is_empty());
-        assert!(extract_flag_anchored("$ git push --force-with-lease").is_empty());
+        assert!(extract_flag_anchored("❯ cargo build --release", &def()).is_empty());
+        assert!(extract_flag_anchored("$ git push --force-with-lease", &def()).is_empty());
     }
 
     #[test]
     fn flag_anchored_short_flag() {
-        let m = extract_flag_anchored("[info] ssh -i ~/.ssh/id_ed25519 user@host");
+        let m = extract_flag_anchored("[info] ssh -i ~/.ssh/id_ed25519 user@host", &def());
         assert_eq!(m.len(), 1);
         assert!(m[0].raw.starts_with("ssh -i"));
     }
@@ -668,7 +684,7 @@ mod tests {
         // `dry-run` contains `-run` but it is inside brackets and preceded
         // by `y` (not whitespace) — must not be treated as a flag start.
         // The real flag `--session` should anchor the match instead.
-        let m = extract_flag_anchored("[dry-run] zellij --session foo");
+        let m = extract_flag_anchored("[dry-run] zellij --session foo", &def());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "zellij --session foo");
     }
@@ -679,6 +695,7 @@ mod tests {
         let patterns = PatternsConfig {
             command: CommandPatternConfig {
                 flag_anchored: true,
+                ..CommandPatternConfig::default()
             },
             ..PatternsConfig::default()
         };
@@ -695,19 +712,19 @@ mod tests {
     #[test]
     fn min_length_and_alpha_filter() {
         // Too short.
-        assert!(extract("❯ ls").is_empty());
+        assert!(extract("❯ ls", &def()).is_empty());
         // No alphabetic chars — fish right-prompt timestamp on an empty prompt.
         assert!(
-            extract("❯                                                   18:48:12").is_empty(),
+            extract("❯                                                   18:48:12", &def()).is_empty(),
             "empty prompt with timestamp should not match"
         );
         assert!(
-            extract("❯                                                   18:48:49").is_empty(),
+            extract("❯                                                   18:48:49", &def()).is_empty(),
             "second empty prompt with timestamp should not match"
         );
         // Real commands still match.
-        assert!(!extract("❯ git status").is_empty());
-        assert!(!extract("❯ cat /tmp/test").is_empty());
+        assert!(!extract("❯ git status", &def()).is_empty());
+        assert!(!extract("❯ cat /tmp/test", &def()).is_empty());
     }
 
     // ---- rprompt / trailing-whitespace trim tests ----
@@ -715,21 +732,21 @@ mod tests {
     #[test]
     fn prompt_anchored_strips_rprompt() {
         // Fish/zsh right-prompt: timestamp pushed to the right edge.
-        let m = extract("❯ git status                                        18:48:12");
+        let m = extract("❯ git status                                        18:48:12", &def());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "git status");
     }
 
     #[test]
     fn prompt_anchored_strips_rprompt_dollar() {
-        let m = extract("$ cargo build --release                             10:23:45");
+        let m = extract("$ cargo build --release                             10:23:45", &def());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "cargo build --release");
     }
 
     #[test]
     fn exec_anchored_strips_rprompt() {
-        let m = extract("running: tmux new-session -s main                   18:48:12");
+        let m = extract("running: tmux new-session -s main                   18:48:12", &def());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "tmux new-session -s main");
     }
@@ -738,7 +755,7 @@ mod tests {
     fn prompt_anchored_continuation_with_rprompt_on_first_line() {
         // The `\` sits before the rprompt gap — splice must still fire.
         let text = "$ curl https://example.com \\                        18:48:12\n    | jq .";
-        let m = extract(text);
+        let m = extract(text, &def());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "curl https://example.com | jq .");
     }
@@ -749,6 +766,7 @@ mod tests {
         let patterns = PatternsConfig {
             command: CommandPatternConfig {
                 flag_anchored: true,
+                ..CommandPatternConfig::default()
             },
             ..PatternsConfig::default()
         };
@@ -768,5 +786,35 @@ mod tests {
         // With default config (flag_anchored false), zellij IS in triggers
         // so exec-anchored still catches it — but flag-anchored path is off.
         assert!(!PatternsConfig::default().command.flag_anchored);
+    }
+
+    #[test]
+    fn rprompt_min_spaces_default_is_five() {
+        assert_eq!(CommandPatternConfig::default().rprompt_min_spaces, 5);
+    }
+
+    #[test]
+    fn rprompt_custom_threshold_lower() {
+        // With min_spaces=2, two spaces already truncate.
+        let cfg = CommandPatternConfig {
+            rprompt_min_spaces: 2,
+            ..CommandPatternConfig::default()
+        };
+        let m = extract("❯ git status  extra", &cfg);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "git status");
+    }
+
+    #[test]
+    fn rprompt_custom_threshold_higher() {
+        // With min_spaces=10, four spaces are NOT a cut point.
+        let cfg = CommandPatternConfig {
+            rprompt_min_spaces: 10,
+            ..CommandPatternConfig::default()
+        };
+        // Four spaces between words — should NOT be trimmed with threshold 10.
+        let m = extract("❯ git log    --oneline", &cfg);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "git log    --oneline");
     }
 }

@@ -363,7 +363,7 @@ pub struct PatternsConfig {
 }
 
 /// Built-in command-pattern tuning, under `patterns { command { ... } }`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct CommandPatternConfig {
     /// Opt-in heuristic: lines that contain a `-x`/`-xyz`/`--long` style
     /// argument are scanned for a command word by walking back to the
@@ -372,6 +372,22 @@ pub struct CommandPatternConfig {
     /// flag-looking tokens. Enable when you want to catch commands that
     /// don't appear after a prompt marker and aren't in the trigger list.
     pub flag_anchored: bool,
+    /// Number of consecutive whitespace characters that signals the start
+    /// of a right-side prompt (rprompt) or other trailing noise. Text from
+    /// that run onward is dropped from the captured command. Default 5 —
+    /// wide enough to avoid false positives on double-spaced output (e.g.
+    /// `git diff --stat`) while reliably catching rprompts that are pushed
+    /// to the right edge with many spaces.
+    pub rprompt_min_spaces: usize,
+}
+
+impl Default for CommandPatternConfig {
+    fn default() -> Self {
+        Self {
+            flag_anchored: false,
+            rprompt_min_spaces: 5,
+        }
+    }
 }
 
 /// Built-in secret-pattern tuning, under `patterns { secret { ... } }`.
@@ -415,6 +431,13 @@ fn parse_patterns_block(nodes: &[Node], patterns: &mut PatternsConfig) {
                 if child.name == "flag_anchored" {
                     if let Some(b) = child.args.first().and_then(|v| v.as_bool()) {
                         patterns.command.flag_anchored = b;
+                    }
+                }
+                if child.name == "rprompt_min_spaces" {
+                    if let Some(n) = child.args.first().and_then(|v| v.as_int()) {
+                        if n > 0 {
+                            patterns.command.rprompt_min_spaces = n as usize;
+                        }
                     }
                 }
             }
@@ -908,6 +931,28 @@ mod tests {
             parse::parse(r#"patterns { secret { entropy_filter false future_key "x" } }"#).unwrap();
         let config = Config::from_ast(&nodes);
         assert!(!config.patterns.secret.entropy_filter);
+    }
+
+    #[test]
+    fn patterns_command_rprompt_min_spaces_default() {
+        assert_eq!(Config::default().patterns.command.rprompt_min_spaces, 5);
+    }
+
+    #[test]
+    fn patterns_command_rprompt_min_spaces_set() {
+        let nodes =
+            parse::parse(r#"patterns { command { rprompt_min_spaces 3 } }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.patterns.command.rprompt_min_spaces, 3);
+    }
+
+    #[test]
+    fn patterns_command_rprompt_min_spaces_zero_ignored() {
+        // Zero is nonsensical (would strip every word boundary); keep default.
+        let nodes =
+            parse::parse(r#"patterns { command { rprompt_min_spaces 0 } }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.patterns.command.rprompt_min_spaces, 5);
     }
 
     #[test]
