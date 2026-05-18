@@ -195,14 +195,15 @@ pub fn extract(text: &str, cfg: &CommandPatternConfig) -> Vec<Match> {
             if !cmd_after_prompt.trim().is_empty() {
                 let (full_cmd, context, lines_consumed) =
                     splice_continuation(&lines, i, cmd_after_prompt);
-                if looks_like_command(&full_cmd) {
+                let (raw_cmd, hint) = strip_inline_comment(&full_cmd);
+                if looks_like_command(raw_cmd) {
                     let span_start = line_offsets[i] + prompt_len;
                     let span_end = if lines_consumed == 1 {
                         span_start + cmd_after_prompt.len()
                     } else {
                         line_offsets[i + lines_consumed - 1] + lines[i + lines_consumed - 1].len()
                     };
-                    out.push(make_match(full_cmd, context, span_start, span_end));
+                    out.push(make_match(raw_cmd.to_string(), hint, context, span_start, span_end));
                     skip_until = i + lines_consumed;
                     continue;
                 }
@@ -213,11 +214,13 @@ pub fn extract(text: &str, cfg: &CommandPatternConfig) -> Vec<Match> {
         if let Some(start_col) = match_exec(line) {
             let cmd = &line[start_col..];
             let trimmed = trim_rprompt(cmd, cfg.rprompt_min_spaces).trim_end();
-            if looks_like_command(trimmed) {
+            let (raw_cmd, hint) = strip_inline_comment(trimmed);
+            if looks_like_command(raw_cmd) {
                 let span_start = line_offsets[i] + start_col;
                 let span_end = span_start + trimmed.len();
                 out.push(make_match(
-                    trimmed.to_string(),
+                    raw_cmd.to_string(),
+                    hint,
                     line.to_string(),
                     span_start,
                     span_end,
@@ -422,11 +425,16 @@ fn flag_anchored_start(line: &str) -> Option<usize> {
 
     let first_char = line[cmd_start..].chars().next()?;
 
-    // Guard: first char must be lowercase ASCII.
+    // Guard: first char must be lowercase ASCII or a path-like prefix char.
     //   - Rejects flag-first lines (`--option val`) where first char is `-`
     //   - Rejects prose starting uppercase (`The --flag`) → `T` fails
     //   - Rejects non-ASCII prompt chars (`❯`) → multi-byte, not ascii_lowercase
-    if !first_char.is_ascii_lowercase() {
+    //   - Allows `./script.sh`, `/usr/bin/cmd`, `~/bin/cmd`
+    if !first_char.is_ascii_lowercase()
+        && first_char != '.'
+        && first_char != '/'
+        && first_char != '~'
+    {
         return None;
     }
 
@@ -458,13 +466,15 @@ pub fn extract_flag_anchored(text: &str, cfg: &CommandPatternConfig) -> Vec<Matc
             continue;
         };
         let trimmed = trim_rprompt(&line[start..], cfg.rprompt_min_spaces).trim_end();
-        if !looks_like_command(trimmed) {
+        let (raw_cmd, hint) = strip_inline_comment(trimmed);
+        if !looks_like_command(raw_cmd) {
             continue;
         }
         let span_start = line_offsets[i] + start;
         let span_end = span_start + trimmed.len();
         out.push(make_match(
-            trimmed.to_string(),
+            raw_cmd.to_string(),
+            hint,
             line.to_string(),
             span_start,
             span_end,
@@ -473,9 +483,24 @@ pub fn extract_flag_anchored(text: &str, cfg: &CommandPatternConfig) -> Vec<Matc
     out
 }
 
-fn make_match(raw: String, context: String, span_start: usize, span_end: usize) -> Match {
+/// Split `s` at the first ` # <text>` inline comment.
+/// Returns `(command, Some(hint))` or `(s, None)` if no comment found.
+fn strip_inline_comment(s: &str) -> (&str, Option<&str>) {
+    if let Some(pos) = s.find(" # ") {
+        let hint = s[pos + 3..].trim();
+        if !hint.is_empty() {
+            return (s[..pos].trim_end(), Some(hint));
+        }
+    }
+    (s, None)
+}
+
+fn make_match(raw: String, hint: Option<&str>, context: String, span_start: usize, span_end: usize) -> Match {
     let mut fields = HashMap::new();
     fields.insert("match".to_string(), raw.clone());
+    if let Some(h) = hint {
+        fields.insert("hint".to_string(), h.to_string());
+    }
     Match {
         ty: MatchType::Command,
         raw: raw.clone(),
@@ -485,6 +510,60 @@ fn make_match(raw: String, context: String, span_start: usize, span_end: usize) 
         span: (span_start, span_end),
         fields,
     }
+}
+
+/// Opt-in: extract path-like commands (`./foo`, `/usr/bin/bar`, `~/bin/baz`)
+/// identified by a trailing ` # <description>` inline comment. The description
+/// becomes `fields["hint"]`. Skips lines already handled by prompt-anchored,
+/// exec-anchored, or flag-anchored passes.
+pub fn extract_comment_anchored(text: &str, _cfg: &CommandPatternConfig) -> Vec<Match> {
+    let lines: Vec<&str> = text.lines().collect();
+    let line_offsets = compute_line_offsets(&lines);
+    let mut out = Vec::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        if match_prompt(line).is_some() {
+            continue;
+        }
+        if match_exec(line).is_some() {
+            continue;
+        }
+        if flag_anchored_start(line).is_some() {
+            continue;
+        }
+
+        let Some(comment_pos) = line.find(" # ") else {
+            continue;
+        };
+
+        let hint = line[comment_pos + 3..].trim();
+        if hint.is_empty() {
+            continue;
+        }
+
+        let lead = line.bytes().take_while(|&b| b == b' ' || b == b'\t').count();
+        let cmd = line[lead..comment_pos].trim_end();
+
+        if cmd.is_empty() || !looks_like_command(cmd) {
+            continue;
+        }
+
+        let first_char = cmd.chars().next().unwrap();
+        if first_char != '.' && first_char != '/' && first_char != '~' {
+            continue;
+        }
+
+        let span_start = line_offsets[i] + lead;
+        let span_end = span_start + cmd.len();
+        out.push(make_match(
+            cmd.to_string(),
+            Some(hint),
+            line.to_string(),
+            span_start,
+            span_end,
+        ));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -842,5 +921,129 @@ mod tests {
         let m = extract("❯ git log    --oneline", &cfg);
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "git log    --oneline");
+    }
+
+    // ---- inline comment stripping ----
+
+    #[test]
+    fn prompt_anchored_inline_comment_stripped() {
+        let m = extract("$ ./deploy.sh --prod # deploy to production", &def());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "./deploy.sh --prod");
+        assert_eq!(
+            m[0].fields.get("hint"),
+            Some(&"deploy to production".to_string())
+        );
+    }
+
+    #[test]
+    fn exec_anchored_inline_comment_stripped() {
+        let m = extract("sudo apt install foo # install packages", &def());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "sudo apt install foo");
+        assert_eq!(
+            m[0].fields.get("hint"),
+            Some(&"install packages".to_string())
+        );
+    }
+
+    #[test]
+    fn flag_anchored_strips_inline_comment() {
+        let m = extract_flag_anchored("./sync-all.sh --dry-run # preview only", &def());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "./sync-all.sh --dry-run");
+        assert_eq!(m[0].fields.get("hint"), Some(&"preview only".to_string()));
+    }
+
+    // ---- flag-anchored path prefix ----
+
+    #[test]
+    fn flag_anchored_dotslash_prefix() {
+        let m = extract_flag_anchored("./sync-all.sh --dry-run", &def());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "./sync-all.sh --dry-run");
+    }
+
+    #[test]
+    fn flag_anchored_absolute_path_prefix() {
+        let m = extract_flag_anchored("/usr/bin/rsync -avz src/ dest/", &def());
+        assert_eq!(m.len(), 1);
+        assert!(m[0].raw.starts_with("/usr/bin/rsync"));
+    }
+
+    // ---- comment-anchored ----
+
+    #[test]
+    fn comment_anchored_dotslash_no_flag() {
+        let m = extract_comment_anchored("./sync-all.sh           # sync everything", &def());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "./sync-all.sh");
+        assert_eq!(
+            m[0].fields.get("hint"),
+            Some(&"sync everything".to_string())
+        );
+    }
+
+    #[test]
+    fn comment_anchored_skips_prompt_lines() {
+        let m = extract_comment_anchored("$ ./foo.sh # does stuff", &def());
+        assert!(m.is_empty(), "prompt-anchored line must not double-extract");
+    }
+
+    #[test]
+    fn comment_anchored_skips_exec_anchored_lines() {
+        // exec-anchored fires for `sudo`; comment-anchored must not also fire.
+        let m = extract_comment_anchored("sudo apt install foo # install packages", &def());
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn comment_anchored_skips_flag_anchored_lines() {
+        // flag-anchored handles `./script.sh --dry-run # preview only`
+        let m = extract_comment_anchored("./sync-all.sh --dry-run # preview only", &def());
+        assert!(m.is_empty(), "flag-anchored line must not double-extract");
+    }
+
+    #[test]
+    fn comment_anchored_rejects_non_path_start() {
+        // Lowercase word without path prefix — leave it to exec-anchored / flag-anchored.
+        let m = extract_comment_anchored("mycommand --opt # does stuff", &def());
+        assert!(m.is_empty(), "non-path start should not match");
+    }
+
+    #[test]
+    fn comment_anchored_both_lines_produce_two_commands() {
+        let text = "./sync-all.sh           # sync everything\n./sync-all.sh --dry-run # preview only";
+        let ca = extract_comment_anchored(text, &def());
+        assert_eq!(ca.len(), 1, "comment-anchored gets the no-flag line");
+        assert_eq!(ca[0].raw, "./sync-all.sh");
+
+        let fa = extract_flag_anchored(text, &def());
+        assert_eq!(fa.len(), 1, "flag-anchored gets the flagged line");
+        assert_eq!(fa[0].raw, "./sync-all.sh --dry-run");
+    }
+
+    #[test]
+    fn comment_anchored_via_extract_with_config() {
+        use crate::config::schema::{CommandPatternConfig, PatternsConfig};
+        let patterns = PatternsConfig {
+            command: CommandPatternConfig {
+                flag_anchored: true,
+                comment_anchored: true,
+                ..CommandPatternConfig::default()
+            },
+            ..PatternsConfig::default()
+        };
+        let text = "./sync-all.sh           # sync everything\n./sync-all.sh --dry-run # preview only";
+        let matches = crate::extract::extract(text, &patterns);
+        // `./sync-all.sh` may be classified as File (higher priority than Command
+        // in cross-type dedup), so check by raw value rather than type.
+        let raws: std::collections::HashSet<&str> =
+            matches.iter().map(|m| m.raw.as_str()).collect();
+        assert!(raws.contains("./sync-all.sh"), "comment-anchored raw missing");
+        assert!(
+            raws.contains("./sync-all.sh --dry-run"),
+            "flag-anchored raw missing"
+        );
     }
 }

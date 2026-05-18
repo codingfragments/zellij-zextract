@@ -154,6 +154,12 @@ pub fn extract(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
             &patterns.command,
         ));
     }
+    if patterns.command.comment_anchored {
+        all.extend(crate::pattern::command::extract_comment_anchored(
+            text,
+            &patterns.command,
+        ));
+    }
     all.extend(crate::pattern::secret::extract(text, &patterns.secret));
     all.extend(extract_custom(text, patterns));
 
