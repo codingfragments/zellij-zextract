@@ -372,6 +372,19 @@ pub struct CommandPatternConfig {
     /// flag-looking tokens. Enable when you want to catch commands that
     /// don't appear after a prompt marker and aren't in the trigger list.
     pub flag_anchored: bool,
+    /// Opt-in heuristic: lines of the form `./script.sh # description` (or
+    /// `/abs/path` / `~/bin/cmd`) are extracted as commands, with the
+    /// inline comment stored as `fields["hint"]`. Only fires for path-like
+    /// starts (`./`, `/`, `~/`) to keep false positives low. Skips lines
+    /// already caught by prompt-anchored, exec-anchored, or flag-anchored.
+    pub comment_anchored: bool,
+    /// Opt-in heuristic: filenames with known script extensions (`.sh`,
+    /// `.py`, `.pl`, `.perl`, `.bash`, `.fish`, `.rb`, `.cmd`, `.bat`)
+    /// are treated as commands when followed by at least one argument AND
+    /// either the script is the first token on the line or the line also
+    /// contains a flag. Guards against prose like "edit install.sh to
+    /// configure it".
+    pub extension_anchored: bool,
     /// Number of consecutive whitespace characters that signals the start
     /// of a right-side prompt (rprompt) or other trailing noise. Text from
     /// that run onward is dropped from the captured command. Default 5 —
@@ -385,6 +398,8 @@ impl Default for CommandPatternConfig {
     fn default() -> Self {
         Self {
             flag_anchored: false,
+            comment_anchored: false,
+            extension_anchored: false,
             rprompt_min_spaces: 5,
         }
     }
@@ -431,6 +446,16 @@ fn parse_patterns_block(nodes: &[Node], patterns: &mut PatternsConfig) {
                 if child.name == "flag_anchored" {
                     if let Some(b) = child.args.first().and_then(|v| v.as_bool()) {
                         patterns.command.flag_anchored = b;
+                    }
+                }
+                if child.name == "comment_anchored" {
+                    if let Some(b) = child.args.first().and_then(|v| v.as_bool()) {
+                        patterns.command.comment_anchored = b;
+                    }
+                }
+                if child.name == "extension_anchored" {
+                    if let Some(b) = child.args.first().and_then(|v| v.as_bool()) {
+                        patterns.command.extension_anchored = b;
                     }
                 }
                 if child.name == "rprompt_min_spaces" {
