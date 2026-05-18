@@ -264,6 +264,11 @@ struct State {
     /// no non-plugin pane is focused in subsequent PaneUpdates — so
     /// `pick()` falls back to this hint instead of an arbitrary pane.
     last_focused_non_plugin: Option<u32>,
+    /// Position (0-based) of the currently active tab, derived from
+    /// TabUpdate events. Used to restrict `pick()` and the
+    /// `last_focused_non_plugin` hint to panes in the user's current
+    /// tab, preventing cross-tab pane selection in multi-tab sessions.
+    active_tab_index: Option<usize>,
     /// Our own plugin's pane id, used to call
     /// `change_floating_panes_coordinates` when the preview toggles
     /// (grows the pane to make room).
@@ -321,6 +326,7 @@ impl Default for State {
             selected: HashSet::new(),
             source_pane: None,
             last_focused_non_plugin: None,
+            active_tab_index: None,
             own_plugin_id: 0,
             current_grab_profile_index: 0,
             extraction_done: false,
@@ -410,6 +416,7 @@ impl ZellijPlugin for State {
         subscribe(&[
             EventType::Key,
             EventType::PaneUpdate,
+            EventType::TabUpdate,
             EventType::PermissionRequestResult,
             EventType::HostFolderChanged,
             EventType::FailedToChangeHostFolder,
@@ -454,19 +461,45 @@ impl ZellijPlugin for State {
                 self.config_loaded = true;
                 true
             }
+            Event::TabUpdate(tabs) => {
+                if let Some(active) = tabs.iter().find(|t| t.active) {
+                    self.active_tab_index = Some(active.position);
+                    plog!(
+                        self,
+                        LogLevel::Debug,
+                        "TabUpdate: active_tab_index={}",
+                        active.position,
+                    );
+                }
+                false
+            }
             Event::PaneUpdate(manifest) => {
                 // Update the hint BEFORE calling pick() — if a non-plugin
                 // pane is focused in this snapshot, record it. Once the
                 // plugin steals focus the terminal pane becomes unfocused,
                 // but pick() will use this hint to find it.
-                for panes in manifest.panes.values() {
-                    for pane in panes {
-                        if !pane.is_plugin && pane.is_focused {
-                            self.last_focused_non_plugin = Some(pane.id);
-                        }
+                //
+                // Restrict to the active tab so that panes in background
+                // tabs (each of which also has an is_focused pane) don't
+                // overwrite the hint with a pane the user isn't looking at.
+                let active_panes: Box<dyn Iterator<Item = &zellij_tile::prelude::PaneInfo>> =
+                    match self.active_tab_index {
+                        Some(idx) => match manifest.panes.get(&idx) {
+                            Some(panes) => Box::new(panes.iter()),
+                            None => Box::new(manifest.panes.values().flatten()),
+                        },
+                        None => Box::new(manifest.panes.values().flatten()),
+                    };
+                for pane in active_panes {
+                    if !pane.is_plugin && pane.is_focused {
+                        self.last_focused_non_plugin = Some(pane.id);
                     }
                 }
-                let new_source = source_pane::pick(&manifest, self.last_focused_non_plugin);
+                let new_source = source_pane::pick(
+                    &manifest,
+                    self.last_focused_non_plugin,
+                    self.active_tab_index,
+                );
                 plog!(
                     self,
                     LogLevel::Debug,

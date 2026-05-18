@@ -30,13 +30,24 @@ use zellij_tile::prelude::PaneManifest;
 /// `hint` is `State.last_focused_non_plugin`: the pane ID last seen as
 /// focused in a PaneUpdate where a non-plugin pane held focus. Pass `None`
 /// on cold start (no prior PaneUpdate received).
-pub fn pick(manifest: &PaneManifest, hint: Option<u32>) -> Option<u32> {
+pub fn pick(manifest: &PaneManifest, hint: Option<u32>, active_tab: Option<usize>) -> Option<u32> {
     let mut focused_non_plugin: Option<u32> = None;
     let mut hint_exists = false;
     let mut first_tiled: Option<u32> = None; // non-floating, non-suppressed
     let mut first_any: Option<u32> = None;
 
-    for panes in manifest.panes.values() {
+    // Restrict to the active tab when known; fall back to all tabs so cold-
+    // start and single-tab sessions still work (no TabUpdate received yet).
+    let tab_panes: Box<dyn Iterator<Item = &Vec<zellij_tile::prelude::PaneInfo>>> = match active_tab
+    {
+        Some(idx) => match manifest.panes.get(&idx) {
+            Some(panes) => Box::new(std::iter::once(panes)),
+            None => Box::new(manifest.panes.values()),
+        },
+        None => Box::new(manifest.panes.values()),
+    };
+
+    for panes in tab_panes {
         for pane in panes {
             if pane.is_plugin {
                 continue;
