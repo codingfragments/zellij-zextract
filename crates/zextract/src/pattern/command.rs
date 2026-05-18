@@ -190,6 +190,7 @@ pub fn extract(text: &str) -> Vec<Match> {
 
         // 1. PROMPT-ANCHORED.
         if let Some((prompt_len, cmd_after_prompt)) = match_prompt(line) {
+            let cmd_after_prompt = trim_rprompt(cmd_after_prompt);
             if !cmd_after_prompt.trim().is_empty() {
                 let (full_cmd, context, lines_consumed) =
                     splice_continuation(&lines, i, cmd_after_prompt);
@@ -210,7 +211,7 @@ pub fn extract(text: &str) -> Vec<Match> {
         // 2. EXEC-ANCHORED (fallback). No continuation splice — too risky in prose.
         if let Some(start_col) = match_exec(line) {
             let cmd = &line[start_col..];
-            let trimmed = cmd.trim_end();
+            let trimmed = trim_rprompt(cmd).trim_end();
             if looks_like_command(trimmed) {
                 let span_start = line_offsets[i] + start_col;
                 let span_end = span_start + trimmed.len();
@@ -325,6 +326,20 @@ fn ends_with_continuation(s: &str) -> bool {
     s.trim_end().ends_with('\\')
 }
 
+/// Truncate `s` at the first run of two or more consecutive ASCII whitespace
+/// characters. Fish/zsh right-side prompts (timestamps, git status) are pushed
+/// to the right edge with a wide column of spaces — two spaces in a row never
+/// appear inside a real command token, so this is a safe cut point.
+fn trim_rprompt(s: &str) -> &str {
+    let b = s.as_bytes();
+    for i in 0..b.len().saturating_sub(1) {
+        if b[i].is_ascii_whitespace() && b[i + 1].is_ascii_whitespace() {
+            return &s[..i];
+        }
+    }
+    s
+}
+
 fn strip_leading<'a>(line: &'a str, patterns: &[Regex]) -> &'a str {
     for re in patterns {
         if let Some(m) = re.find(line) {
@@ -430,7 +445,7 @@ pub fn extract_flag_anchored(text: &str) -> Vec<Match> {
         let Some(start) = flag_anchored_start(line) else {
             continue;
         };
-        let trimmed = line[start..].trim_end();
+        let trimmed = trim_rprompt(&line[start..]).trim_end();
         if !looks_like_command(trimmed) {
             continue;
         }
@@ -693,6 +708,56 @@ mod tests {
         // Real commands still match.
         assert!(!extract("❯ git status").is_empty());
         assert!(!extract("❯ cat /tmp/test").is_empty());
+    }
+
+    // ---- rprompt / trailing-whitespace trim tests ----
+
+    #[test]
+    fn prompt_anchored_strips_rprompt() {
+        // Fish/zsh right-prompt: timestamp pushed to the right edge.
+        let m = extract("❯ git status                                        18:48:12");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "git status");
+    }
+
+    #[test]
+    fn prompt_anchored_strips_rprompt_dollar() {
+        let m = extract("$ cargo build --release                             10:23:45");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "cargo build --release");
+    }
+
+    #[test]
+    fn exec_anchored_strips_rprompt() {
+        let m = extract("running: tmux new-session -s main                   18:48:12");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "tmux new-session -s main");
+    }
+
+    #[test]
+    fn prompt_anchored_continuation_with_rprompt_on_first_line() {
+        // The `\` sits before the rprompt gap — splice must still fire.
+        let text = "$ curl https://example.com \\                        18:48:12\n    | jq .";
+        let m = extract(text);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "curl https://example.com | jq .");
+    }
+
+    #[test]
+    fn flag_anchored_strips_rprompt() {
+        use crate::config::schema::{CommandPatternConfig, PatternsConfig};
+        let patterns = PatternsConfig {
+            command: CommandPatternConfig { flag_anchored: true },
+            ..PatternsConfig::default()
+        };
+        let text = "output: cargo build --release                       10:23:45";
+        let matches = crate::extract::extract(text, &patterns);
+        let cmds: Vec<_> = matches
+            .iter()
+            .filter(|m| m.ty == crate::extract::MatchType::Command)
+            .collect();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].raw, "cargo build --release");
     }
 
     #[test]
