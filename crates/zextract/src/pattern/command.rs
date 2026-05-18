@@ -141,6 +141,53 @@ const CONTINUATION_STRIP: &[&str] = &[
     r"^\s+",             // leading whitespace (catchall)
 ];
 
+/// Script file extensions that, when present on a filename, strongly suggest
+/// the word is a command being invoked rather than a file being referenced.
+/// Used by the opt-in `extension_anchored` pass.
+const SCRIPT_EXTENSIONS: &[&str] = &[
+    "sh", "bash", "zsh", "fish", "py", "pl", "perl", "rb", "cmd", "bat",
+];
+
+fn extension_script_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        let exts = SCRIPT_EXTENSIONS.join("|");
+        Regex::new(&format!(r"\b[\w][\w.-]*\.(?:{exts})\b"))
+            .expect("extension script regex compiles")
+    })
+}
+
+/// Return the byte column where an extension-anchored command starts on
+/// `line`, or `None` if the line doesn't qualify.
+///
+/// Fires when a script filename (`foo.sh`, `run.py`, …) is either the
+/// first token on the line OR the line contains a flag (`-x` / `--opt`),
+/// and there is at least one argument following it.
+fn match_exec_extension(line: &str) -> Option<usize> {
+    let re = extension_script_regex();
+    let has_flag = flag_anchor_regex().is_match(line);
+
+    for m in re.find_iter(line) {
+        let start = m.start();
+        let prev = (start > 0).then(|| line.as_bytes()[start - 1]);
+        if !ok_command_preceding_byte(prev) {
+            continue;
+        }
+        // Accept only when script is the first token or a flag is present.
+        // This rejects prose like "edit install.sh to configure it".
+        let is_line_start = line[..start].trim().is_empty();
+        if !is_line_start && !has_flag {
+            continue;
+        }
+        // Require at least one argument after the script name.
+        if line[m.end()..].trim_start().is_empty() {
+            continue;
+        }
+        return Some(start);
+    }
+    None
+}
+
 fn trigger_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -191,15 +238,18 @@ pub fn extract(text: &str, cfg: &CommandPatternConfig) -> Vec<Match> {
 
         // 1. PROMPT-ANCHORED.
         if let Some((prompt_len, cmd_after_prompt)) = match_prompt(line) {
-            let cmd_after_prompt = trim_rprompt(cmd_after_prompt, cfg.rprompt_min_spaces);
-            if !cmd_after_prompt.trim().is_empty() {
+            // Strip inline comment before rprompt-trim so `\ # hint` sequences
+            // don't get swallowed by the wide-space trim.
+            let (cmd_no_comment, hint) = strip_inline_comment(cmd_after_prompt);
+            let cmd_first = trim_rprompt(cmd_no_comment, cfg.rprompt_min_spaces);
+            if !cmd_first.trim().is_empty() {
                 let (full_cmd, context, lines_consumed) =
-                    splice_continuation(&lines, i, cmd_after_prompt);
-                let (raw_cmd, hint) = strip_inline_comment(&full_cmd);
+                    splice_continuation(&lines, i, cmd_first, cfg.rprompt_min_spaces);
+                let raw_cmd = full_cmd.trim_end();
                 if looks_like_command(raw_cmd) {
                     let span_start = line_offsets[i] + prompt_len;
                     let span_end = if lines_consumed == 1 {
-                        span_start + cmd_after_prompt.len()
+                        span_start + cmd_first.len()
                     } else {
                         line_offsets[i + lines_consumed - 1] + lines[i + lines_consumed - 1].len()
                     };
@@ -212,12 +262,11 @@ pub fn extract(text: &str, cfg: &CommandPatternConfig) -> Vec<Match> {
 
         // 2. EXEC-ANCHORED (fallback). No continuation splice — too risky in prose.
         if let Some(start_col) = match_exec(line) {
-            let cmd = &line[start_col..];
-            let trimmed = trim_rprompt(cmd, cfg.rprompt_min_spaces).trim_end();
-            let (raw_cmd, hint) = strip_inline_comment(trimmed);
+            let (cmd_no_comment, hint) = strip_inline_comment(&line[start_col..]);
+            let raw_cmd = trim_rprompt(cmd_no_comment, cfg.rprompt_min_spaces).trim_end();
             if looks_like_command(raw_cmd) {
                 let span_start = line_offsets[i] + start_col;
-                let span_end = span_start + trimmed.len();
+                let span_end = span_start + raw_cmd.len();
                 out.push(make_match(
                     raw_cmd.to_string(),
                     hint,
@@ -290,13 +339,17 @@ fn ok_command_preceding_byte(b: Option<u8>) -> bool {
     }
 }
 
-/// Splice a prompt-anchored command's continuations. Returns
+/// Splice a command's continuation lines (trailing `\`). Returns
 /// `(full_command_text, full_context, lines_consumed)`. `lines_consumed`
 /// is at least 1 (the starting line itself).
+///
+/// Each continuation line has its leading noise stripped, then its own
+/// rprompt gap and inline `# comment` removed before being appended.
 fn splice_continuation(
     lines: &[&str],
     start_idx: usize,
     first_cmd: &str,
+    rprompt_min_spaces: usize,
 ) -> (String, String, usize) {
     let mut cmd = first_cmd.to_string();
     let mut context = lines[start_idx].to_string();
@@ -309,8 +362,11 @@ fn splice_continuation(
             break;
         }
         let next_line = lines[next_idx];
-        // Strip leading noise.
+        // Strip leading noise, then inline comment, then rprompt gap.
+        // Comment-first avoids `\       # hint` sequences being eaten by rprompt.
         let stripped = strip_leading(next_line, strip_res);
+        let (stripped, _) = strip_inline_comment(stripped);
+        let stripped = trim_rprompt(stripped, rprompt_min_spaces).trim_end();
         // Drop trailing backslash AND any whitespace around it, then add
         // exactly one space before the spliced continuation.
         let trimmed_len = cmd
@@ -368,6 +424,33 @@ fn strip_leading<'a>(line: &'a str, patterns: &[Regex]) -> &'a str {
 
 // ---- Flag-anchored detection ----
 
+/// Find the byte offset of the LAST path-like token start (`./`, `/word`,
+/// `~/`) in `s` that is preceded by whitespace or start-of-string.
+/// Used to refine the command start when prose precedes a path command.
+fn last_path_like_start(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut best: Option<usize> = None;
+    let mut i = 0;
+    while i < b.len() {
+        let prev_ok = i == 0 || b[i - 1].is_ascii_whitespace();
+        if prev_ok {
+            if b[i] == b'.' && b.get(i + 1) == Some(&b'/') {
+                best = Some(i);
+            } else if b[i] == b'~' && b.get(i + 1) == Some(&b'/') {
+                best = Some(i);
+            } else if b[i] == b'/'
+                && b.get(i + 1)
+                    .map(|c| c.is_ascii_alphabetic())
+                    .unwrap_or(false)
+            {
+                best = Some(i);
+            }
+        }
+        i += 1;
+    }
+    best
+}
+
 /// Boundary bytes that end a context prefix and start a new command context.
 const FLAG_BOUNDARY: &[u8] = b"]})[{><:;|&(,'\"";
 
@@ -408,7 +491,7 @@ fn flag_anchored_start(line: &str) -> Option<usize> {
 
     // Walk backward through the prefix to find the last boundary char.
     let prefix = &line[..flag_match.start()];
-    let cmd_start = prefix
+    let mut cmd_start = prefix
         .as_bytes()
         .iter()
         .rposition(|&b| FLAG_BOUNDARY.contains(&b))
@@ -416,12 +499,20 @@ fn flag_anchored_start(line: &str) -> Option<usize> {
         .unwrap_or(0);
 
     // Skip leading whitespace after the boundary.
-    let cmd_start = cmd_start
-        + line[cmd_start..]
-            .chars()
-            .take_while(|c| c.is_whitespace())
-            .map(|c| c.len_utf8())
-            .sum::<usize>();
+    cmd_start += line[cmd_start..]
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .map(|c| c.len_utf8())
+        .sum::<usize>();
+
+    // If the boundary walk lands on prose (lowercase word, no path prefix),
+    // look for a path-like token (./foo, /abs, ~/bin) further right.
+    // Handles: "please do this or    ./script.sh --flag"
+    if line[cmd_start..].starts_with(|c: char| c.is_ascii_lowercase()) {
+        if let Some(path_off) = last_path_like_start(&line[cmd_start..flag_match.start()]) {
+            cmd_start += path_off;
+        }
+    }
 
     let first_char = line[cmd_start..].chars().next()?;
 
@@ -457,28 +548,33 @@ pub fn extract_flag_anchored(text: &str, cfg: &CommandPatternConfig) -> Vec<Matc
     let lines: Vec<&str> = text.lines().collect();
     let line_offsets = compute_line_offsets(&lines);
     let mut out = Vec::new();
+    let mut skip_until = 0usize;
 
     for (i, line) in lines.iter().enumerate() {
+        if i < skip_until {
+            continue;
+        }
         if match_prompt(line).is_some() {
             continue; // already handled by prompt-anchored path
         }
         let Some(start) = flag_anchored_start(line) else {
             continue;
         };
-        let trimmed = trim_rprompt(&line[start..], cfg.rprompt_min_spaces).trim_end();
-        let (raw_cmd, hint) = strip_inline_comment(trimmed);
-        if !looks_like_command(raw_cmd) {
+        // Strip inline comment before rprompt-trim (same reason as prompt-anchored).
+        let (cmd_no_comment, hint) = strip_inline_comment(&line[start..]);
+        let raw_first = trim_rprompt(cmd_no_comment, cfg.rprompt_min_spaces).trim_end();
+        if !looks_like_command(raw_first) {
             continue;
         }
+        let (full_cmd, context, lines_consumed) = if ends_with_continuation(raw_first) {
+            splice_continuation(&lines, i, raw_first, cfg.rprompt_min_spaces)
+        } else {
+            (raw_first.to_string(), line.to_string(), 1)
+        };
+        skip_until = i + lines_consumed;
         let span_start = line_offsets[i] + start;
-        let span_end = span_start + trimmed.len();
-        out.push(make_match(
-            raw_cmd.to_string(),
-            hint,
-            line.to_string(),
-            span_start,
-            span_end,
-        ));
+        let span_end = span_start + raw_first.len();
+        out.push(make_match(full_cmd, hint, context, span_start, span_end));
     }
     out
 }
@@ -512,16 +608,60 @@ fn make_match(raw: String, hint: Option<&str>, context: String, span_start: usiz
     }
 }
 
+/// Opt-in: extract script invocations identified by a known file extension
+/// (`.sh`, `.py`, `.pl`, etc.) that are followed by at least one argument
+/// and either start the line or have a flag in the same line.
+pub fn extract_extension_anchored(text: &str, cfg: &CommandPatternConfig) -> Vec<Match> {
+    let lines: Vec<&str> = text.lines().collect();
+    let line_offsets = compute_line_offsets(&lines);
+    let mut out = Vec::new();
+    let mut skip_until = 0usize;
+
+    for (i, line) in lines.iter().enumerate() {
+        if i < skip_until {
+            continue;
+        }
+        if match_prompt(line).is_some() {
+            continue;
+        }
+        if match_exec(line).is_some() {
+            continue; // exec-anchored already covers this line
+        }
+        let Some(start) = match_exec_extension(line) else {
+            continue;
+        };
+        let (cmd_no_comment, hint) = strip_inline_comment(&line[start..]);
+        let raw_first = trim_rprompt(cmd_no_comment, cfg.rprompt_min_spaces).trim_end();
+        if !looks_like_command(raw_first) {
+            continue;
+        }
+        let (full_cmd, context, lines_consumed) = if ends_with_continuation(raw_first) {
+            splice_continuation(&lines, i, raw_first, cfg.rprompt_min_spaces)
+        } else {
+            (raw_first.to_string(), line.to_string(), 1)
+        };
+        skip_until = i + lines_consumed;
+        let span_start = line_offsets[i] + start;
+        let span_end = span_start + raw_first.len();
+        out.push(make_match(full_cmd, hint, context, span_start, span_end));
+    }
+    out
+}
+
 /// Opt-in: extract path-like commands (`./foo`, `/usr/bin/bar`, `~/bin/baz`)
 /// identified by a trailing ` # <description>` inline comment. The description
 /// becomes `fields["hint"]`. Skips lines already handled by prompt-anchored,
 /// exec-anchored, or flag-anchored passes.
-pub fn extract_comment_anchored(text: &str, _cfg: &CommandPatternConfig) -> Vec<Match> {
+pub fn extract_comment_anchored(text: &str, cfg: &CommandPatternConfig) -> Vec<Match> {
     let lines: Vec<&str> = text.lines().collect();
     let line_offsets = compute_line_offsets(&lines);
     let mut out = Vec::new();
+    let mut skip_until = 0usize;
 
     for (i, line) in lines.iter().enumerate() {
+        if i < skip_until {
+            continue;
+        }
         if match_prompt(line).is_some() {
             continue;
         }
@@ -553,12 +693,19 @@ pub fn extract_comment_anchored(text: &str, _cfg: &CommandPatternConfig) -> Vec<
             continue;
         }
 
+        let (full_cmd, context, lines_consumed) = if ends_with_continuation(cmd) {
+            splice_continuation(&lines, i, cmd, cfg.rprompt_min_spaces)
+        } else {
+            (cmd.to_string(), line.to_string(), 1)
+        };
+        skip_until = i + lines_consumed;
+
         let span_start = line_offsets[i] + lead;
         let span_end = span_start + cmd.len();
         out.push(make_match(
-            cmd.to_string(),
+            full_cmd,
             Some(hint),
-            line.to_string(),
+            context,
             span_start,
             span_end,
         ));
@@ -898,6 +1045,56 @@ mod tests {
         assert_eq!(CommandPatternConfig::default().rprompt_min_spaces, 5);
     }
 
+    // ---- extension-anchored ----
+
+    #[test]
+    fn extension_anchored_sh_at_line_start() {
+        let m = extract_extension_anchored("backup.sh --incremental", &def());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "backup.sh --incremental");
+    }
+
+    #[test]
+    fn extension_anchored_py_with_positional_args() {
+        let m = extract_extension_anchored("process.py input.txt output.txt", &def());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "process.py input.txt output.txt");
+    }
+
+    #[test]
+    fn extension_anchored_pl_with_flag() {
+        let m = extract_extension_anchored("run deploy.pl --env prod", &def());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "deploy.pl --env prod");
+    }
+
+    #[test]
+    fn extension_anchored_rejects_prose_no_flag() {
+        // "edit" before the script + no flag → should not match.
+        let m = extract_extension_anchored("edit install.sh to configure it", &def());
+        assert!(m.is_empty(), "prose reference should not match: {m:?}");
+    }
+
+    #[test]
+    fn extension_anchored_rejects_bare_filename() {
+        // No argument after the script name.
+        let m = extract_extension_anchored("see install.sh for details", &def());
+        assert!(m.is_empty(), "bare filename should not match: {m:?}");
+    }
+
+    #[test]
+    fn extension_anchored_strips_inline_comment() {
+        let m = extract_extension_anchored("backup.sh --daily # run as cron job", &def());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "backup.sh --daily");
+        assert_eq!(m[0].fields.get("hint"), Some(&"run as cron job".to_string()));
+    }
+
+    #[test]
+    fn extension_anchored_off_by_default() {
+        assert!(!CommandPatternConfig::default().extension_anchored);
+    }
+
     #[test]
     fn rprompt_custom_threshold_lower() {
         // With min_spaces=2, two spaces already truncate.
@@ -1009,6 +1206,61 @@ mod tests {
         // Lowercase word without path prefix — leave it to exec-anchored / flag-anchored.
         let m = extract_comment_anchored("mycommand --opt # does stuff", &def());
         assert!(m.is_empty(), "non-path start should not match");
+    }
+
+    // ---- prose-before-path in flag-anchored ----
+
+    #[test]
+    fn flag_anchored_prose_before_dotslash() {
+        let m = extract_flag_anchored(
+            "please do this or    ./testcommand.sh --dry-run",
+            &def(),
+        );
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "./testcommand.sh --dry-run");
+    }
+
+    #[test]
+    fn flag_anchored_prose_before_absolute_path() {
+        let m = extract_flag_anchored("run with: /usr/local/bin/deploy.sh --prod", &def());
+        assert_eq!(m.len(), 1);
+        assert!(m[0].raw.starts_with("/usr/local/bin/deploy.sh"));
+    }
+
+    // ---- multi-line continuation in flag-anchored ----
+
+    #[test]
+    fn flag_anchored_multiline_continuation() {
+        let text =
+            "please do this or    ./testcommand.sh -option ntu --otunug osu -n \\       # command\n\
+                                      -line 1 2 3 \\                       # some more exlains\n\
+                                      test";
+        let m = extract_flag_anchored(text, &def());
+        assert_eq!(m.len(), 1);
+        assert_eq!(
+            m[0].raw,
+            "./testcommand.sh -option ntu --otunug osu -n -line 1 2 3 test"
+        );
+        assert_eq!(m[0].fields.get("hint"), Some(&"command".to_string()));
+    }
+
+    #[test]
+    fn flag_anchored_continuation_inline_comments_stripped() {
+        let text = "./deploy.sh --env prod \\  # first part\n    --verbose             # second part";
+        let m = extract_flag_anchored(text, &def());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "./deploy.sh --env prod --verbose");
+        assert_eq!(m[0].fields.get("hint"), Some(&"first part".to_string()));
+    }
+
+    // ---- multi-line prompt-anchored strips inline comments on continuations ----
+
+    #[test]
+    fn prompt_anchored_continuation_strips_inline_comment() {
+        let text = "$ ./build.sh --release \\  # compile\n    --target wasm32         # platform";
+        let m = extract(text, &def());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].raw, "./build.sh --release --target wasm32");
     }
 
     #[test]

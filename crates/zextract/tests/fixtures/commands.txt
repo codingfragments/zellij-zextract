@@ -23,3 +23,17 @@ The README says: pip install zextract-cli followed by zextract --help.
 ./sync-all.sh --dry-run # preview only
 /usr/local/bin/backup.sh --incremental # nightly incremental backup
 sudo systemctl restart nginx # apply config changes
+
+# Prose-before-path with continuation (flag_anchored config)
+please do this or    ./testcommand.sh -option ntu --otunug osu -n \       # command
+                                      -line 1 2 3 \                       # some more details
+                                      test
+
+# Prompt-anchored continuation with inline comments
+$ ./build.sh --release \  # compile
+    --target wasm32       # platform
+
+# Extension-anchored examples (extension_anchored config)
+backup.sh --daily # scheduled backup
+process.py input.csv output.json
+deploy.pl --env prod --verbose
