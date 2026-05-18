@@ -206,11 +206,15 @@ mod tests {
     use super::*;
 
     fn cfg_on() -> SecretPatternConfig {
-        SecretPatternConfig { entropy_filter: true }
+        SecretPatternConfig {
+            entropy_filter: true,
+        }
     }
 
     fn cfg_off() -> SecretPatternConfig {
-        SecretPatternConfig { entropy_filter: false }
+        SecretPatternConfig {
+            entropy_filter: false,
+        }
     }
 
     #[test]
@@ -291,7 +295,9 @@ mod tests {
     fn entropy_filter_disabled_suppresses_fallback_matches() {
         // High-entropy unknown token that would fire with entropy_filter=true.
         let m = extract("token: aBc12345XyZ987KkPpQqRrSsTtUu", &cfg_off());
-        assert!(!m.iter().any(|x| x.fields.get("secret_format").map(|s| s.as_str()) == Some("entropy")));
+        assert!(!m
+            .iter()
+            .any(|x| x.fields.get("secret_format").map(|s| s.as_str()) == Some("entropy")));
     }
 
     #[test]

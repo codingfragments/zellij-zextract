@@ -890,30 +890,22 @@ mod tests {
 
     #[test]
     fn patterns_secret_entropy_filter_can_be_disabled() {
-        let nodes = parse::parse(
-            r#"patterns { secret { entropy_filter false } }"#,
-        )
-        .unwrap();
+        let nodes = parse::parse(r#"patterns { secret { entropy_filter false } }"#).unwrap();
         let config = Config::from_ast(&nodes);
         assert!(!config.patterns.secret.entropy_filter);
     }
 
     #[test]
     fn patterns_secret_entropy_filter_explicit_true() {
-        let nodes = parse::parse(
-            r#"patterns { secret { entropy_filter true } }"#,
-        )
-        .unwrap();
+        let nodes = parse::parse(r#"patterns { secret { entropy_filter true } }"#).unwrap();
         let config = Config::from_ast(&nodes);
         assert!(config.patterns.secret.entropy_filter);
     }
 
     #[test]
     fn patterns_secret_unknown_inner_keys_ignored() {
-        let nodes = parse::parse(
-            r#"patterns { secret { entropy_filter false future_key "x" } }"#,
-        )
-        .unwrap();
+        let nodes =
+            parse::parse(r#"patterns { secret { entropy_filter false future_key "x" } }"#).unwrap();
         let config = Config::from_ast(&nodes);
         assert!(!config.patterns.secret.entropy_filter);
     }
