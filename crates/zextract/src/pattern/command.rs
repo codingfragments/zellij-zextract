@@ -256,7 +256,13 @@ pub fn extract(text: &str, cfg: &CommandPatternConfig) -> Vec<Match> {
                     } else {
                         line_offsets[i + lines_consumed - 1] + lines[i + lines_consumed - 1].len()
                     };
-                    out.push(make_match(raw_cmd.to_string(), hint, context, span_start, span_end));
+                    out.push(make_match(
+                        raw_cmd.to_string(),
+                        hint,
+                        context,
+                        span_start,
+                        span_end,
+                    ));
                     skip_until = i + lines_consumed;
                     continue;
                 }
@@ -627,7 +633,13 @@ fn strip_inline_comment(s: &str) -> (&str, Option<&str>) {
     (s, None)
 }
 
-fn make_match(raw: String, hint: Option<&str>, context: String, span_start: usize, span_end: usize) -> Match {
+fn make_match(
+    raw: String,
+    hint: Option<&str>,
+    context: String,
+    span_start: usize,
+    span_end: usize,
+) -> Match {
     let mut fields = HashMap::new();
     fields.insert("match".to_string(), raw.clone());
     if let Some(h) = hint {
@@ -723,7 +735,10 @@ pub fn extract_comment_anchored(text: &str, cfg: &CommandPatternConfig) -> Vec<M
             continue;
         }
 
-        let lead = line.bytes().take_while(|&b| b == b' ' || b == b'\t').count();
+        let lead = line
+            .bytes()
+            .take_while(|&b| b == b' ' || b == b'\t')
+            .count();
         let cmd = line[lead..comment_pos].trim_end();
 
         if cmd.is_empty() || !looks_like_command(cmd) {
@@ -1129,7 +1144,10 @@ mod tests {
         let m = extract_extension_anchored("backup.sh --daily # run as cron job", &def());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "backup.sh --daily");
-        assert_eq!(m[0].fields.get("hint"), Some(&"run as cron job".to_string()));
+        assert_eq!(
+            m[0].fields.get("hint"),
+            Some(&"run as cron job".to_string())
+        );
     }
 
     #[test]
@@ -1310,10 +1328,7 @@ mod tests {
 
     #[test]
     fn flag_anchored_prose_before_dotslash() {
-        let m = extract_flag_anchored(
-            "please do this or    ./testcommand.sh --dry-run",
-            &def(),
-        );
+        let m = extract_flag_anchored("please do this or    ./testcommand.sh --dry-run", &def());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "./testcommand.sh --dry-run");
     }
@@ -1344,7 +1359,8 @@ mod tests {
 
     #[test]
     fn flag_anchored_continuation_inline_comments_stripped() {
-        let text = "./deploy.sh --env prod \\  # first part\n    --verbose             # second part";
+        let text =
+            "./deploy.sh --env prod \\  # first part\n    --verbose             # second part";
         let m = extract_flag_anchored(text, &def());
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "./deploy.sh --env prod --verbose");
@@ -1363,7 +1379,8 @@ mod tests {
 
     #[test]
     fn comment_anchored_both_lines_produce_two_commands() {
-        let text = "./sync-all.sh           # sync everything\n./sync-all.sh --dry-run # preview only";
+        let text =
+            "./sync-all.sh           # sync everything\n./sync-all.sh --dry-run # preview only";
         let ca = extract_comment_anchored(text, &def());
         assert_eq!(ca.len(), 1, "comment-anchored gets the no-flag line");
         assert_eq!(ca[0].raw, "./sync-all.sh");
@@ -1384,13 +1401,17 @@ mod tests {
             },
             ..PatternsConfig::default()
         };
-        let text = "./sync-all.sh           # sync everything\n./sync-all.sh --dry-run # preview only";
+        let text =
+            "./sync-all.sh           # sync everything\n./sync-all.sh --dry-run # preview only";
         let matches = crate::extract::extract(text, &patterns);
         // `./sync-all.sh` may be classified as File (higher priority than Command
         // in cross-type dedup), so check by raw value rather than type.
         let raws: std::collections::HashSet<&str> =
             matches.iter().map(|m| m.raw.as_str()).collect();
-        assert!(raws.contains("./sync-all.sh"), "comment-anchored raw missing");
+        assert!(
+            raws.contains("./sync-all.sh"),
+            "comment-anchored raw missing"
+        );
         assert!(
             raws.contains("./sync-all.sh --dry-run"),
             "flag-anchored raw missing"

@@ -400,12 +400,18 @@ mod fixture_tests {
         // comment-anchored: `./sync-all.sh` is also matched by the file pattern,
         // so cross-type dedup promotes it to File (higher priority) and the hint
         // is lost. Just assert the raw value is present.
-        assert!(find("./sync-all.sh").is_some(), "./sync-all.sh not extracted");
+        assert!(
+            find("./sync-all.sh").is_some(),
+            "./sync-all.sh not extracted"
+        );
 
         // flag-anchored with path prefix: args prevent file-pattern overlap so
         // the Command match (and its hint) survives dedup.
         let dry = find("./sync-all.sh --dry-run").expect("./sync-all.sh --dry-run not extracted");
-        assert_eq!(dry.fields.get("hint").map(String::as_str), Some("preview only"));
+        assert_eq!(
+            dry.fields.get("hint").map(String::as_str),
+            Some("preview only")
+        );
 
         let backup =
             find("/usr/local/bin/backup.sh --incremental").expect("backup.sh not extracted");
@@ -416,12 +422,18 @@ mod fixture_tests {
 
         // exec-anchored also strips inline comments.
         let nginx = find("sudo systemctl restart nginx").expect("nginx restart not extracted");
-        assert_eq!(nginx.fields.get("hint").map(String::as_str), Some("apply config changes"));
+        assert_eq!(
+            nginx.fields.get("hint").map(String::as_str),
+            Some("apply config changes")
+        );
 
         // flag-anchored with prose prefix + multi-line continuation.
         let multiline = find("./testcommand.sh -option ntu --otunug osu -n -line 1 2 3 test")
             .expect("multi-line continuation not extracted");
-        assert_eq!(multiline.fields.get("hint").map(String::as_str), Some("command"));
+        assert_eq!(
+            multiline.fields.get("hint").map(String::as_str),
+            Some("command")
+        );
 
         // prompt-anchored continuation with inline comments.
         assert!(
@@ -430,10 +442,17 @@ mod fixture_tests {
         );
 
         // extension-anchored.
-        let backup_daily = find("backup.sh --daily").expect("extension-anchored backup.sh not extracted");
-        assert_eq!(backup_daily.fields.get("hint").map(String::as_str), Some("scheduled backup"));
+        let backup_daily =
+            find("backup.sh --daily").expect("extension-anchored backup.sh not extracted");
+        assert_eq!(
+            backup_daily.fields.get("hint").map(String::as_str),
+            Some("scheduled backup")
+        );
 
-        assert!(find("deploy.pl --env prod --verbose").is_some(), "deploy.pl not extracted");
+        assert!(
+            find("deploy.pl --env prod --verbose").is_some(),
+            "deploy.pl not extracted"
+        );
     }
 
     #[test]
