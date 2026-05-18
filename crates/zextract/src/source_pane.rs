@@ -38,14 +38,14 @@ pub fn pick(manifest: &PaneManifest, hint: Option<u32>, active_tab: Option<usize
 
     // Restrict to the active tab when known; fall back to all tabs so cold-
     // start and single-tab sessions still work (no TabUpdate received yet).
-    let tab_panes: Box<dyn Iterator<Item = &Vec<zellij_tile::prelude::PaneInfo>>> =
-        match active_tab {
-            Some(idx) => match manifest.panes.get(&idx) {
-                Some(panes) => Box::new(std::iter::once(panes)),
-                None => Box::new(manifest.panes.values()),
-            },
+    let tab_panes: Box<dyn Iterator<Item = &Vec<zellij_tile::prelude::PaneInfo>>> = match active_tab
+    {
+        Some(idx) => match manifest.panes.get(&idx) {
+            Some(panes) => Box::new(std::iter::once(panes)),
             None => Box::new(manifest.panes.values()),
-        };
+        },
+        None => Box::new(manifest.panes.values()),
+    };
 
     for panes in tab_panes {
         for pane in panes {

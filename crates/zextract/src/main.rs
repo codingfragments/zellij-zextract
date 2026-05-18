@@ -495,8 +495,11 @@ impl ZellijPlugin for State {
                         self.last_focused_non_plugin = Some(pane.id);
                     }
                 }
-                let new_source =
-                    source_pane::pick(&manifest, self.last_focused_non_plugin, self.active_tab_index);
+                let new_source = source_pane::pick(
+                    &manifest,
+                    self.last_focused_non_plugin,
+                    self.active_tab_index,
+                );
                 plog!(
                     self,
                     LogLevel::Debug,
