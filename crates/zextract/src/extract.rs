@@ -376,6 +376,49 @@ mod fixture_tests {
     }
 
     #[test]
+    fn commands_fixture_inline_comment_hints() {
+        use crate::config::schema::CommandPatternConfig;
+        let text = include_str!("../tests/fixtures/commands.txt");
+        let patterns = PatternsConfig {
+            command: CommandPatternConfig {
+                flag_anchored: true,
+                comment_anchored: true,
+                ..CommandPatternConfig::default()
+            },
+            ..PatternsConfig::default()
+        };
+        let matches = extract(text, &patterns);
+        let find = |raw: &str| matches.iter().find(|m| m.raw == raw);
+
+        // comment-anchored: `./sync-all.sh` is also matched by the file pattern,
+        // so cross-type dedup promotes it to File (higher priority) and the hint
+        // is lost. Just assert the raw value is present.
+        assert!(find("./sync-all.sh").is_some(), "./sync-all.sh not extracted");
+
+        // flag-anchored with path prefix: args prevent file-pattern overlap so
+        // the Command match (and its hint) survives dedup.
+        let dry = find("./sync-all.sh --dry-run").expect("./sync-all.sh --dry-run not extracted");
+        assert_eq!(
+            dry.fields.get("hint").map(String::as_str),
+            Some("preview only")
+        );
+
+        let backup =
+            find("/usr/local/bin/backup.sh --incremental").expect("backup.sh not extracted");
+        assert_eq!(
+            backup.fields.get("hint").map(String::as_str),
+            Some("nightly incremental backup")
+        );
+
+        // exec-anchored also strips inline comments.
+        let nginx = find("sudo systemctl restart nginx").expect("nginx restart not extracted");
+        assert_eq!(
+            nginx.fields.get("hint").map(String::as_str),
+            Some("apply config changes")
+        );
+    }
+
+    #[test]
     fn secrets_fixture_has_secrets() {
         let text = include_str!("../tests/fixtures/secrets.txt");
         let matches = extract(text, &ep());
