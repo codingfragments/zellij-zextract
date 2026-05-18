@@ -511,14 +511,20 @@ mod tests {
 
     #[test]
     fn exec_anchored_in_prose() {
-        let m = extract("To install run sudo apt install zellij from the README.", &def());
+        let m = extract(
+            "To install run sudo apt install zellij from the README.",
+            &def(),
+        );
         assert_eq!(m.len(), 1);
         assert!(m[0].raw.starts_with("sudo apt install zellij"));
     }
 
     #[test]
     fn exec_anchored_pipeline_kept_together() {
-        let m = extract("curl -fsSL https://example.com/install.sh | sudo bash", &def());
+        let m = extract(
+            "curl -fsSL https://example.com/install.sh | sudo bash",
+            &def(),
+        );
         assert_eq!(m.len(), 1);
         // Full pipeline captured as one match.
         assert!(m[0].raw.contains("curl"));
@@ -617,7 +623,10 @@ mod tests {
     #[test]
     fn zellij_exec_anchored_in_output() {
         // `[dry-run]` is not a prompt — exec-anchored must catch zellij.
-        let m = extract("[dry-run] zellij --session claude-chats --layout cfdefault.kdl", &def());
+        let m = extract(
+            "[dry-run] zellij --session claude-chats --layout cfdefault.kdl",
+            &def(),
+        );
         assert_eq!(m.len(), 1);
         assert!(m[0].raw.starts_with("zellij --session"));
     }
@@ -715,11 +724,19 @@ mod tests {
         assert!(extract("❯ ls", &def()).is_empty());
         // No alphabetic chars — fish right-prompt timestamp on an empty prompt.
         assert!(
-            extract("❯                                                   18:48:12", &def()).is_empty(),
+            extract(
+                "❯                                                   18:48:12",
+                &def()
+            )
+            .is_empty(),
             "empty prompt with timestamp should not match"
         );
         assert!(
-            extract("❯                                                   18:48:49", &def()).is_empty(),
+            extract(
+                "❯                                                   18:48:49",
+                &def()
+            )
+            .is_empty(),
             "second empty prompt with timestamp should not match"
         );
         // Real commands still match.
@@ -732,21 +749,30 @@ mod tests {
     #[test]
     fn prompt_anchored_strips_rprompt() {
         // Fish/zsh right-prompt: timestamp pushed to the right edge.
-        let m = extract("❯ git status                                        18:48:12", &def());
+        let m = extract(
+            "❯ git status                                        18:48:12",
+            &def(),
+        );
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "git status");
     }
 
     #[test]
     fn prompt_anchored_strips_rprompt_dollar() {
-        let m = extract("$ cargo build --release                             10:23:45", &def());
+        let m = extract(
+            "$ cargo build --release                             10:23:45",
+            &def(),
+        );
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "cargo build --release");
     }
 
     #[test]
     fn exec_anchored_strips_rprompt() {
-        let m = extract("running: tmux new-session -s main                   18:48:12", &def());
+        let m = extract(
+            "running: tmux new-session -s main                   18:48:12",
+            &def(),
+        );
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "tmux new-session -s main");
     }

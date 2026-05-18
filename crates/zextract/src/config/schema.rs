@@ -940,8 +940,7 @@ mod tests {
 
     #[test]
     fn patterns_command_rprompt_min_spaces_set() {
-        let nodes =
-            parse::parse(r#"patterns { command { rprompt_min_spaces 3 } }"#).unwrap();
+        let nodes = parse::parse(r#"patterns { command { rprompt_min_spaces 3 } }"#).unwrap();
         let config = Config::from_ast(&nodes);
         assert_eq!(config.patterns.command.rprompt_min_spaces, 3);
     }
@@ -949,8 +948,7 @@ mod tests {
     #[test]
     fn patterns_command_rprompt_min_spaces_zero_ignored() {
         // Zero is nonsensical (would strip every word boundary); keep default.
-        let nodes =
-            parse::parse(r#"patterns { command { rprompt_min_spaces 0 } }"#).unwrap();
+        let nodes = parse::parse(r#"patterns { command { rprompt_min_spaces 0 } }"#).unwrap();
         let config = Config::from_ast(&nodes);
         assert_eq!(config.patterns.command.rprompt_min_spaces, 5);
     }
