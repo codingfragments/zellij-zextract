@@ -472,18 +472,14 @@ fn last_path_like_start(s: &str) -> Option<usize> {
     let mut i = 0;
     while i < b.len() {
         let prev_ok = i == 0 || b[i - 1].is_ascii_whitespace();
-        if prev_ok {
-            if b[i] == b'.' && b.get(i + 1) == Some(&b'/') {
-                best = Some(i);
-            } else if b[i] == b'~' && b.get(i + 1) == Some(&b'/') {
-                best = Some(i);
-            } else if b[i] == b'/'
-                && b.get(i + 1)
-                    .map(|c| c.is_ascii_alphabetic())
-                    .unwrap_or(false)
-            {
-                best = Some(i);
-            }
+        let is_path_start = prev_ok
+            && ((b[i] == b'.' || b[i] == b'~') && b.get(i + 1) == Some(&b'/')
+                || b[i] == b'/'
+                    && b.get(i + 1)
+                        .map(|c| c.is_ascii_alphabetic())
+                        .unwrap_or(false));
+        if is_path_start {
+            best = Some(i);
         }
         i += 1;
     }
