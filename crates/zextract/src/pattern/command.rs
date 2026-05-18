@@ -235,6 +235,9 @@ pub fn extract(text: &str, cfg: &CommandPatternConfig) -> Vec<Match> {
         if i < skip_until {
             continue;
         }
+        if is_comment_line(line) {
+            continue; // whole-line comment (#… or //…) — nothing to extract
+        }
 
         // 1. PROMPT-ANCHORED.
         if let Some((prompt_len, cmd_after_prompt)) = match_prompt(line) {
@@ -261,7 +264,9 @@ pub fn extract(text: &str, cfg: &CommandPatternConfig) -> Vec<Match> {
         }
 
         // 2. EXEC-ANCHORED (fallback). No continuation splice — too risky in prose.
-        if let Some(start_col) = match_exec(line) {
+        // Scan only the pre-comment portion so triggers inside `# …` or `// …`
+        // inline comments are not matched.
+        if let Some(start_col) = match_exec(pre_comment_line(line)) {
             let (cmd_no_comment, hint) = strip_inline_comment(&line[start_col..]);
             let raw_cmd = trim_rprompt(cmd_no_comment, cfg.rprompt_min_spaces).trim_end();
             if looks_like_command(raw_cmd) {
@@ -422,6 +427,34 @@ fn strip_leading<'a>(line: &'a str, patterns: &[Regex]) -> &'a str {
     line
 }
 
+// ---- Comment-line guards ----
+
+/// Return true if `line` is a comment line (`#…` or `//…`), optionally
+/// preceded by whitespace. Such lines are skipped by all extraction passes.
+fn is_comment_line(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with('#') || t.starts_with("//")
+}
+
+/// Truncate `line` at the first unambiguous inline comment start:
+///   `#`  preceded by whitespace (or at col 0)
+///   `//` preceded by whitespace (or at col 0)
+/// Prevents exec-anchored from firing on triggers inside comment text.
+/// URL `://` is safe because `:` is not whitespace.
+fn pre_comment_line(line: &str) -> &str {
+    let b = line.as_bytes();
+    for i in 0..b.len() {
+        let prev_ws = i == 0 || b[i - 1].is_ascii_whitespace();
+        if b[i] == b'#' && prev_ws {
+            return &line[..i];
+        }
+        if b[i] == b'/' && b.get(i + 1) == Some(&b'/') && prev_ws {
+            return &line[..i];
+        }
+    }
+    line
+}
+
 // ---- Flag-anchored detection ----
 
 /// Find the byte offset of the LAST path-like token start (`./`, `/word`,
@@ -554,6 +587,9 @@ pub fn extract_flag_anchored(text: &str, cfg: &CommandPatternConfig) -> Vec<Matc
         if i < skip_until {
             continue;
         }
+        if is_comment_line(line) {
+            continue;
+        }
         if match_prompt(line).is_some() {
             continue; // already handled by prompt-anchored path
         }
@@ -621,6 +657,9 @@ pub fn extract_extension_anchored(text: &str, cfg: &CommandPatternConfig) -> Vec
         if i < skip_until {
             continue;
         }
+        if is_comment_line(line) {
+            continue;
+        }
         if match_prompt(line).is_some() {
             continue;
         }
@@ -660,6 +699,9 @@ pub fn extract_comment_anchored(text: &str, cfg: &CommandPatternConfig) -> Vec<M
 
     for (i, line) in lines.iter().enumerate() {
         if i < skip_until {
+            continue;
+        }
+        if is_comment_line(line) {
             continue;
         }
         if match_prompt(line).is_some() {
@@ -1093,6 +1135,62 @@ mod tests {
     #[test]
     fn extension_anchored_off_by_default() {
         assert!(!CommandPatternConfig::default().extension_anchored);
+    }
+
+    // ---- comment-line guards ----
+
+    #[test]
+    fn hash_comment_line_skipped_in_exec_anchored() {
+        // `# sudo apt install foo` is a shell comment — must not trigger.
+        assert!(extract("# sudo apt install foo", &def()).is_empty());
+    }
+
+    #[test]
+    fn double_slash_comment_line_skipped() {
+        assert!(extract("// curl https://example.com", &def()).is_empty());
+    }
+
+    #[test]
+    fn hash_comment_line_skipped_in_flag_anchored() {
+        assert!(extract_flag_anchored("# ./script.sh --flag", &def()).is_empty());
+    }
+
+    #[test]
+    fn hash_comment_line_skipped_in_comment_anchored() {
+        // Would otherwise match comment-anchored via the second `# `.
+        assert!(extract_comment_anchored("# ./script.sh # description", &def()).is_empty());
+    }
+
+    #[test]
+    fn inline_comment_does_not_expose_trigger_in_exec_anchored() {
+        // `sudo` appears only after the `#` — must not produce a match.
+        let m = extract("ls -la # sudo apt install foo", &def());
+        assert!(
+            m.iter().all(|x| !x.raw.contains("sudo")),
+            "sudo after # should not match: {m:?}"
+        );
+    }
+
+    #[test]
+    fn inline_double_slash_does_not_expose_trigger() {
+        let m = extract("ls -la // sudo apt install foo", &def());
+        assert!(
+            m.iter().all(|x| !x.raw.contains("sudo")),
+            "sudo after // should not match: {m:?}"
+        );
+    }
+
+    #[test]
+    fn url_double_slash_not_treated_as_comment() {
+        // `://` is preceded by `:`, not whitespace — must not truncate.
+        let m = extract("curl https://example.com/path", &def());
+        assert!(!m.is_empty(), "curl with https:// should still match");
+        assert!(m[0].raw.contains("https://"));
+    }
+
+    #[test]
+    fn indented_hash_comment_skipped() {
+        assert!(extract("   # sudo apt install foo", &def()).is_empty());
     }
 
     #[test]
