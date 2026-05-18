@@ -747,7 +747,9 @@ mod tests {
     fn flag_anchored_strips_rprompt() {
         use crate::config::schema::{CommandPatternConfig, PatternsConfig};
         let patterns = PatternsConfig {
-            command: CommandPatternConfig { flag_anchored: true },
+            command: CommandPatternConfig {
+                flag_anchored: true,
+            },
             ..PatternsConfig::default()
         };
         let text = "output: cargo build --release                       10:23:45";
