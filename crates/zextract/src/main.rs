@@ -545,15 +545,11 @@ impl ZellijPlugin for State {
                 // Rebuild the sorted pane list for Tab grab. Recomputed
                 // every PaneUpdate so try_extract_tab() always has fresh data.
                 self.active_tab_panes = {
-                    let tab_panes: Vec<zellij_tile::prelude::PaneInfo> =
-                        match self.active_tab_index {
-                            Some(idx) => manifest
-                                .panes
-                                .get(&idx)
-                                .cloned()
-                                .unwrap_or_default(),
-                            None => manifest.panes.values().flatten().cloned().collect(),
-                        };
+                    let tab_panes: Vec<zellij_tile::prelude::PaneInfo> = match self.active_tab_index
+                    {
+                        Some(idx) => manifest.panes.get(&idx).cloned().unwrap_or_default(),
+                        None => manifest.panes.values().flatten().cloned().collect(),
+                    };
                     let hint = self.last_focused_non_plugin;
                     let mut eligible: Vec<_> = tab_panes
                         .into_iter()
@@ -1762,8 +1758,7 @@ impl State {
                     Style::default().fg(type_color(m.ty)),
                 ));
                 // Reserve space: gutter(2) + pane prefix + tag+brackets+spaces + content.
-                let tag_overhead =
-                    m.effective_tag().chars().count() + 5 + pane_prefix_width; // [tag]  = tag+4 + gutter
+                let tag_overhead = m.effective_tag().chars().count() + 5 + pane_prefix_width; // [tag]  = tag+4 + gutter
                 let avail = (area.width as usize).saturating_sub(tag_overhead);
                 let use_middle = matches!(
                     m.ty,
@@ -1812,9 +1807,7 @@ impl State {
         } else {
             "preview".to_string()
         };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(preview_title);
+        let block = Block::default().borders(Borders::ALL).title(preview_title);
         let captured_text = slab.map(|c| c.text.as_str()).unwrap_or("");
         if captured_text.is_empty() {
             Paragraph::new("(no captured text)")
