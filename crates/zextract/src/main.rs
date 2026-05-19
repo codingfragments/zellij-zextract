@@ -795,6 +795,12 @@ impl State {
             }
         };
 
+        // Tab-wide grab is handled by a separate branch below.
+        if matches!(profile.source, config::GrabSource::Tab) {
+            self.try_extract_tab(&profile);
+            return;
+        }
+
         // `get_full_scrollback` controls whether `lines_above_viewport`
         // is populated. Required for any scrollback-source profile;
         // viewport-only profiles save the extra cost.
@@ -821,6 +827,7 @@ impl State {
                     all.push('\n');
                 }
             }
+            config::GrabSource::Tab => unreachable!("handled above"),
         }
         let trimmed = match profile.lines {
             Some(n) => extract::take_recent(&all, n as usize),
@@ -850,6 +857,9 @@ impl State {
         self.extraction_done = true;
         self.refilter();
     }
+
+    /// Stub — real implementation in commit 3.
+    fn try_extract_tab(&mut self, _profile: &config::GrabProfile) {}
 
     fn handle_key(&mut self, key: KeyWithModifier) -> bool {
         // Any keystroke clears the transient message from the previous

@@ -195,6 +195,7 @@ fn parse_grab_profile(node: &Node) -> Option<GrabProfile> {
                     source = match s {
                         "scrollback" => GrabSource::Scrollback,
                         "viewport" => GrabSource::Viewport,
+                        "tab" => GrabSource::Tab,
                         _ => source, // keep default on unknown
                     };
                 }
@@ -312,6 +313,11 @@ impl Default for GrabConfig {
                     source: GrabSource::Scrollback,
                     lines: None,
                 },
+                GrabProfile {
+                    name: "tab-scan".to_string(),
+                    source: GrabSource::Tab,
+                    lines: Some(150),
+                },
             ],
         }
     }
@@ -329,6 +335,9 @@ pub struct GrabProfile {
 pub enum GrabSource {
     Scrollback,
     Viewport,
+    /// Grab scrollback from every non-floating, non-plugin pane on the
+    /// active tab. Results are grouped by pane, last-focused pane first.
+    Tab,
 }
 
 // ---- Types ----
