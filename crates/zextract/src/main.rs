@@ -1795,20 +1795,27 @@ impl State {
     /// captured text, 1-based). No filesystem reads — all content
     /// comes from the matching PaneCapture slab.
     fn render_preview(&self, area: Rect, buf: &mut Buffer) {
-        let block = Block::default().borders(Borders::ALL).title("preview");
         let Some(m) = self.current_match() else {
-            Paragraph::new("(no selection)")
-                .style(Style::default().fg(Color::DarkGray))
-                .block(block)
+            Block::default()
+                .borders(Borders::ALL)
+                .title("preview")
                 .render(area, buf);
             return;
         };
-        let captured_text = self
+        let slab = self
             .captured_panes
             .iter()
-            .find(|c| m.source_pane_id.map_or(true, |id| c.pane_id == id))
-            .map(|c| c.text.as_str())
-            .unwrap_or("");
+            .find(|c| m.source_pane_id.map_or(true, |id| c.pane_id == id));
+        let preview_title = if self.captured_panes.len() > 1 {
+            let pane_name = slab.map(|c| c.title.as_str()).unwrap_or("?");
+            format!("preview — {}", truncate_display(pane_name, 20, false))
+        } else {
+            "preview".to_string()
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(preview_title);
+        let captured_text = slab.map(|c| c.text.as_str()).unwrap_or("");
         if captured_text.is_empty() {
             Paragraph::new("(no captured text)")
                 .style(Style::default().fg(Color::DarkGray))
