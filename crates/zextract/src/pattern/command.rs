@@ -647,6 +647,7 @@ fn make_match(
         display: raw,
         context,
         label: None,
+                source_pane_id: None,
         span: (span_start, span_end),
         fields,
     }

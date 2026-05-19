@@ -233,6 +233,15 @@ enum Mode {
     List,
 }
 
+/// Captured scrollback from one pane, retained for preview context.
+struct PaneCapture {
+    pane_id: u32,
+    /// Pane title at grab time, for the dim prefix in the list renderer.
+    /// Falls back to "pane <id>" when the title is blank.
+    title: String,
+    text: String,
+}
+
 struct State {
     /// True once the async config-load chain has reached a terminal
     /// state (success OR any failure path: no $HOME, host change
@@ -263,10 +272,13 @@ struct State {
     /// it from the HostFolderChanged handler.
     config: Config,
     matches: Vec<Match>,
-    /// The text we extracted from — retained so the preview pane can
-    /// render surrounding lines for any selected match. Costs ~12 KB
-    /// for the default 150-line cap. Empty before first extraction.
-    captured_text: String,
+    /// Captured scrollback per pane, retained for preview context.
+    /// Single element in single-pane mode; one per tab pane in Tab mode.
+    captured_panes: Vec<PaneCapture>,
+    /// Non-floating, non-plugin panes on the active tab, sorted for Tab
+    /// grab: last-focused first, then left-to-right by (pane_x, pane_y).
+    /// Updated on every PaneUpdate. Used by try_extract_tab().
+    active_tab_panes: Vec<zellij_tile::prelude::PaneInfo>,
     query: String,
     /// Result of running `query::parse_query` over `self.query` —
     /// recomputed in `refilter` so the renderer can show active
@@ -340,7 +352,8 @@ impl Default for State {
                 ..Config::default()
             },
             matches: Vec::new(),
-            captured_text: String::new(),
+            captured_panes: Vec::new(),
+            active_tab_panes: Vec::new(),
             query: String::new(),
             parsed_query: ParsedQuery::default(),
             fuzzy: FuzzyEngine::new(),
@@ -518,6 +531,33 @@ impl ZellijPlugin for State {
                         self.last_focused_non_plugin = Some(pane.id);
                     }
                 }
+                // Rebuild the sorted pane list for Tab grab. Recomputed
+                // every PaneUpdate so try_extract_tab() always has fresh data.
+                self.active_tab_panes = {
+                    let tab_panes: Vec<zellij_tile::prelude::PaneInfo> =
+                        match self.active_tab_index {
+                            Some(idx) => manifest
+                                .panes
+                                .get(&idx)
+                                .cloned()
+                                .unwrap_or_default(),
+                            None => manifest.panes.values().flatten().cloned().collect(),
+                        };
+                    let hint = self.last_focused_non_plugin;
+                    let mut eligible: Vec<_> = tab_panes
+                        .into_iter()
+                        .filter(|p| !p.is_plugin && !p.is_floating && !p.is_suppressed)
+                        .collect();
+                    eligible.sort_by(|a, b| {
+                        let a_is_hint = Some(a.id) == hint;
+                        let b_is_hint = Some(b.id) == hint;
+                        b_is_hint
+                            .cmp(&a_is_hint)
+                            .then(a.pane_x.cmp(&b.pane_x))
+                            .then(a.pane_y.cmp(&b.pane_y))
+                    });
+                    eligible
+                };
                 let new_source = source_pane::pick(
                     &manifest,
                     self.last_focused_non_plugin,
@@ -845,9 +885,22 @@ impl State {
             trimmed.lines().count(),
             trimmed.len(),
         );
-        self.matches = extract::extract(&trimmed, &self.config.patterns);
-        // Retain the source text for the preview pane.
-        self.captured_text = trimmed;
+        let pane_title = self
+            .active_tab_panes
+            .iter()
+            .find(|p| p.id == source)
+            .map(|p| pane_display_title(p))
+            .unwrap_or_else(|| format!("pane {source}"));
+        let mut matches = extract::extract(&trimmed, &self.config.patterns);
+        for m in &mut matches {
+            m.source_pane_id = Some(source);
+        }
+        self.matches = matches;
+        self.captured_panes = vec![PaneCapture {
+            pane_id: source,
+            title: pane_title,
+            text: trimmed,
+        }];
         plog!(
             self,
             LogLevel::Debug,
@@ -1640,7 +1693,7 @@ impl State {
     /// captured scrollback. Match line(s) rendered normal; surrounding
     /// context dimmed. Line numbers left-gutter (absolute line in the
     /// captured text, 1-based). No filesystem reads — all content
-    /// comes from `self.captured_text`.
+    /// comes from the matching PaneCapture slab.
     fn render_preview(&self, area: Rect, buf: &mut Buffer) {
         let block = Block::default().borders(Borders::ALL).title("preview");
         let Some(m) = self.current_match() else {
@@ -1650,7 +1703,13 @@ impl State {
                 .render(area, buf);
             return;
         };
-        if self.captured_text.is_empty() {
+        let captured_text = self
+            .captured_panes
+            .iter()
+            .find(|c| m.source_pane_id.map_or(true, |id| c.pane_id == id))
+            .map(|c| c.text.as_str())
+            .unwrap_or("");
+        if captured_text.is_empty() {
             Paragraph::new("(no captured text)")
                 .style(Style::default().fg(Color::DarkGray))
                 .block(block)
@@ -1658,14 +1717,14 @@ impl State {
             return;
         }
 
-        let lines: Vec<&str> = self.captured_text.lines().collect();
+        let lines: Vec<&str> = captured_text.lines().collect();
         if lines.is_empty() {
             block.render(area, buf);
             return;
         }
 
-        let match_line = line_index_for_span(&self.captured_text, m.span.0);
-        let match_line_end = line_index_for_span(&self.captured_text, m.span.1);
+        let match_line = line_index_for_span(captured_text, m.span.0);
+        let match_line_end = line_index_for_span(captured_text, m.span.1);
         let start = match_line.saturating_sub(3);
         let end = (match_line_end + 3).min(lines.len().saturating_sub(1));
         let line_num_width = (end + 1).to_string().len();
@@ -1680,9 +1739,9 @@ impl State {
 
         // Byte offset of the start of each line — used to compute where
         // m.span lands within a specific line for highlight rendering.
-        let match_line_byte_start = line_byte_start(&self.captured_text, match_line);
+        let match_line_byte_start = line_byte_start(captured_text, match_line);
         let match_start_in_line = m.span.0.saturating_sub(match_line_byte_start);
-        let match_line_end_byte_start = line_byte_start(&self.captured_text, match_line_end);
+        let match_line_end_byte_start = line_byte_start(captured_text, match_line_end);
         let match_end_in_line = m.span.1.saturating_sub(match_line_end_byte_start);
 
         let highlight_style = Style::default()
@@ -2098,6 +2157,15 @@ fn line_byte_start(text: &str, idx: usize) -> usize {
         .nth(idx.saturating_sub(1))
         .map(|(pos, _)| pos + 1)
         .unwrap_or(0)
+}
+
+/// Display title for a pane: the pane's title if non-empty, otherwise "pane <id>".
+fn pane_display_title(p: &zellij_tile::prelude::PaneInfo) -> String {
+    if p.title.is_empty() {
+        format!("pane {}", p.id)
+    } else {
+        p.title.clone()
+    }
 }
 
 /// Resolve a tag-string back to its color. Used by pill rendering

@@ -32,6 +32,7 @@ pub fn extract(text: &str) -> Vec<Match> {
                 display: raw,
                 context: line.to_string(),
                 label: None,
+                source_pane_id: None,
                 span: (span_start, span_end),
                 fields,
             });
