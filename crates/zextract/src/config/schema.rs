@@ -674,7 +674,7 @@ mod tests {
         // Grab profiles: quick(150) / deep(1500) / viewport / full
         assert_eq!(c.grab.default_profile, "quick");
         let names: Vec<&str> = c.grab.profiles.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, vec!["quick", "deep", "viewport", "full"]);
+        assert_eq!(names, vec!["quick", "deep", "viewport", "full", "tab-scan"]);
         let quick = &c.grab.profiles[0];
         assert_eq!(quick.source, GrabSource::Scrollback);
         assert_eq!(quick.lines, Some(150));
@@ -801,7 +801,7 @@ mod tests {
             .iter()
             .map(|p| p.name.as_str())
             .collect();
-        assert_eq!(names, vec!["quick", "deep", "viewport", "full"]);
+        assert_eq!(names, vec!["quick", "deep", "viewport", "full", "tab-scan"]);
         assert_eq!(config.grab.default_profile, "quick");
     }
 
@@ -1354,6 +1354,6 @@ mod tests {
         let nodes = parse::parse(r#"grab { default_profile "deep" }"#).unwrap();
         let config = Config::from_ast(&nodes);
         assert_eq!(config.grab.default_profile, "deep");
-        assert_eq!(config.grab.profiles.len(), 4); // defaults preserved
+        assert_eq!(config.grab.profiles.len(), 5); // defaults preserved
     }
 }
