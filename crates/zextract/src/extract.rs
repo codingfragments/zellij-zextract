@@ -38,6 +38,9 @@ pub struct Match {
     /// Display/filter label override for custom patterns. `None` for all
     /// built-in patterns — `effective_tag()` falls back to `ty.tag()`.
     pub label: Option<String>,
+    /// The pane this match was extracted from. `None` for matches produced
+    /// before multi-pane extraction was wired (should not occur at runtime).
+    pub source_pane_id: Option<u32>,
 }
 
 impl Match {
@@ -263,6 +266,7 @@ fn extract_custom(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
                     span: (span_start, span_end),
                     fields,
                     label: Some(cp.name.clone()),
+                    source_pane_id: None,
                 });
             }
             byte_offset_of_line += line.len() + 1;

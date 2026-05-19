@@ -565,6 +565,7 @@ mod tests {
             label: None,
             span: (4, 23),
             fields,
+            source_pane_id: None,
         }
     }
 
@@ -581,6 +582,7 @@ mod tests {
             label: None,
             span: (9, 25),
             fields,
+            source_pane_id: None,
         }
     }
 
@@ -596,6 +598,7 @@ mod tests {
             label: None,
             span: (0, 7),
             fields,
+            source_pane_id: None,
         }
     }
 
@@ -608,6 +611,7 @@ mod tests {
             label: None,
             span: (0, 0),
             fields: HashMap::new(),
+            source_pane_id: None,
         }
     }
 

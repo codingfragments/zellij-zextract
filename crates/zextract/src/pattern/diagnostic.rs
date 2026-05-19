@@ -105,6 +105,7 @@ fn push_match(
         display: raw,
         context: context.to_string(),
         label: None,
+        source_pane_id: None,
         span: (span_start, span_end),
         fields,
     });
