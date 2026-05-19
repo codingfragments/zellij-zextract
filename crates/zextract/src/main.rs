@@ -911,8 +911,74 @@ impl State {
         self.refilter();
     }
 
-    /// Stub — real implementation in commit 3.
-    fn try_extract_tab(&mut self, _profile: &config::GrabProfile) {}
+    /// Grab scrollback from every eligible pane on the active tab and
+    /// run extraction over each one. Panes are processed in the order
+    /// already computed by active_tab_panes (last-focused first, then
+    /// left-to-right by position). Failures are skipped silently.
+    fn try_extract_tab(&mut self, profile: &config::GrabProfile) {
+        if self.active_tab_panes.is_empty() {
+            return;
+        }
+        let panes = self.active_tab_panes.clone();
+        let mut all_matches: Vec<Match> = Vec::new();
+        let mut all_captures: Vec<PaneCapture> = Vec::new();
+
+        for pane in &panes {
+            let Ok(contents) = get_pane_scrollback(PaneId::Terminal(pane.id), true) else {
+                plog!(
+                    self,
+                    LogLevel::Debug,
+                    "try_extract_tab: skipping pane {} — scrollback unavailable",
+                    pane.id
+                );
+                continue;
+            };
+            let mut raw = String::new();
+            for line in contents
+                .lines_above_viewport
+                .iter()
+                .chain(contents.viewport.iter())
+            {
+                raw.push_str(line);
+                raw.push('\n');
+            }
+            let trimmed = match profile.lines {
+                Some(n) => extract::take_recent(&raw, n as usize),
+                None => raw,
+            };
+            plog!(
+                self,
+                LogLevel::Debug,
+                "try_extract_tab: pane={} title={:?} lines={} chars={}",
+                pane.id,
+                pane.title,
+                trimmed.lines().count(),
+                trimmed.len(),
+            );
+            let mut matches = extract::extract(&trimmed, &self.config.patterns);
+            for m in &mut matches {
+                m.source_pane_id = Some(pane.id);
+            }
+            all_captures.push(PaneCapture {
+                pane_id: pane.id,
+                title: pane_display_title(pane),
+                text: trimmed,
+            });
+            all_matches.extend(matches);
+        }
+
+        plog!(
+            self,
+            LogLevel::Debug,
+            "try_extract_tab: done; panes={} total_matches={}",
+            all_captures.len(),
+            all_matches.len()
+        );
+        self.matches = all_matches;
+        self.captured_panes = all_captures;
+        self.extraction_done = true;
+        self.refilter();
+    }
 
     fn handle_key(&mut self, key: KeyWithModifier) -> bool {
         // Any keystroke clears the transient message from the previous
