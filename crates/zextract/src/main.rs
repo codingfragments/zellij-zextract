@@ -896,7 +896,7 @@ impl State {
             .active_tab_panes
             .iter()
             .find(|p| p.id == source)
-            .map(|p| pane_display_title(p))
+            .map(pane_display_title)
             .unwrap_or_else(|| format!("pane {source}"));
         let mut matches = extract::extract(&trimmed, &self.config.patterns);
         for m in &mut matches {
@@ -1800,7 +1800,7 @@ impl State {
         let slab = self
             .captured_panes
             .iter()
-            .find(|c| m.source_pane_id.map_or(true, |id| c.pane_id == id));
+            .find(|c| m.source_pane_id.is_none_or(|id| c.pane_id == id));
         let preview_title = if self.captured_panes.len() > 1 {
             let pane_name = slab.map(|c| c.title.as_str()).unwrap_or("?");
             format!("preview — {}", truncate_display(pane_name, 20, false))
