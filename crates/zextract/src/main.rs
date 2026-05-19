@@ -1720,16 +1720,39 @@ impl State {
                 } else {
                     Span::raw("  ")
                 };
-                let mut spans = vec![
-                    gutter,
-                    Span::styled(
-                        format!("[{}]  ", m.effective_tag()),
-                        Style::default().fg(type_color(m.ty)),
-                    ),
-                ];
-                // Reserve space: gutter(2) + tag+brackets+spaces(tag_len+4) + content.
-                // Truncate so the display fits in the list column.
-                let tag_overhead = m.effective_tag().chars().count() + 5; // [tag]  = tag+4 + gutter
+                // Pane-title prefix: only shown when multiple panes were
+                // grabbed so single-pane mode has no visual overhead.
+                let pane_prefix_span = if self.captured_panes.len() > 1 {
+                    let raw_title = m
+                        .source_pane_id
+                        .and_then(|id| self.captured_panes.iter().find(|c| c.pane_id == id))
+                        .map(|c| c.title.as_str())
+                        .unwrap_or("?");
+                    let title = truncate_display(raw_title, 15, false);
+                    Some(Span::styled(
+                        format!("[{title}]  "),
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::DIM),
+                    ))
+                } else {
+                    None
+                };
+                let pane_prefix_width = pane_prefix_span
+                    .as_ref()
+                    .map(|s| s.content.chars().count())
+                    .unwrap_or(0);
+                let mut spans = vec![gutter];
+                if let Some(ps) = pane_prefix_span {
+                    spans.push(ps);
+                }
+                spans.push(Span::styled(
+                    format!("[{}]  ", m.effective_tag()),
+                    Style::default().fg(type_color(m.ty)),
+                ));
+                // Reserve space: gutter(2) + pane prefix + tag+brackets+spaces + content.
+                let tag_overhead =
+                    m.effective_tag().chars().count() + 5 + pane_prefix_width; // [tag]  = tag+4 + gutter
                 let avail = (area.width as usize).saturating_sub(tag_overhead);
                 let use_middle = matches!(
                     m.ty,
