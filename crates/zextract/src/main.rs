@@ -347,6 +347,9 @@ struct State {
     /// resetting cells per frame and reallocating only when the
     /// terminal size actually changes.
     render_buffer: Option<Buffer>,
+    /// Rows reported by the last `render()` call; used to compute page
+    /// size for PageUp/PageDown without re-running layout.
+    last_rows: usize,
 }
 
 impl Default for State {
@@ -385,6 +388,7 @@ impl Default for State {
             banner: None,
             message: None,
             render_buffer: None,
+            last_rows: 0,
         }
     }
 }
@@ -611,6 +615,7 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        self.last_rows = rows;
         let area = Rect {
             x: 0,
             y: 0,
@@ -1023,6 +1028,21 @@ impl State {
                 }
                 return true;
             }
+            BareKey::PageUp => {
+                let page = self.list_page_size();
+                let i = self.list_state.selected().unwrap_or(0);
+                self.list_state.select(Some(i.saturating_sub(page)));
+                return true;
+            }
+            BareKey::PageDown => {
+                let page = self.list_page_size();
+                let i = self.list_state.selected().unwrap_or(0);
+                if !self.filtered.is_empty() {
+                    let next = (i + page).min(self.filtered.len() - 1);
+                    self.list_state.select(Some(next));
+                }
+                return true;
+            }
             // Shift-Enter → force insert (raw), regardless of type default.
             BareKey::Enter if only_shift => {
                 return self.fire_verb(Verb::Insert);
@@ -1394,6 +1414,12 @@ impl State {
     fn current_match_index(&self) -> Option<usize> {
         let i = self.list_state.selected()?;
         Some(self.filtered.get(i)?.index)
+    }
+
+    /// Visible list rows = total rows minus input (3), footer (4), and
+    /// list border (2). Falls back to 10 before the first render.
+    fn list_page_size(&self) -> usize {
+        self.last_rows.saturating_sub(9).max(1)
     }
 
     /// Toggle the highlighted row's membership in the multi-selection.
