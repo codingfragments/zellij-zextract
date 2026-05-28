@@ -915,6 +915,49 @@ mod tests {
     }
 
     #[test]
+    fn grab_profile_inline_semicolon_separated() {
+        // KDL requires newlines OR semicolons to separate sibling nodes.
+        // Whitespace alone does NOT separate them — `source "s" lines 5`
+        // on one line parses `lines` as a third arg of `source`, not a
+        // separate child, so lines stays None. This test documents the
+        // correct single-line form (semicolons) and guards the multi-line
+        // form that the DEFAULT_CONFIG template now uses.
+        let nodes = parse::parse(
+            r#"grab {
+                profiles {
+                    quick { source "scrollback"; lines 200 }
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.grab.profiles[0].lines, Some(200));
+        assert_eq!(config.grab.profiles[0].source, GrabSource::Scrollback);
+    }
+
+    #[test]
+    fn grab_profile_inline_no_semicolon_loses_lines() {
+        // Regression guard: without semicolons, `lines N` is absorbed as
+        // an extra arg of `source` and the profile gets lines=None.
+        // This behaviour is spec-correct KDL; the config template must
+        // use multi-line format so users don't hit this silently.
+        let nodes = parse::parse(
+            r#"grab {
+                profiles {
+                    quick { source "scrollback" lines 200 }
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(
+            config.grab.profiles[0].lines,
+            None,
+            "without semicolons, lines is silently ignored — expected None"
+        );
+    }
+
+    #[test]
     fn grab_unknown_source_keeps_scrollback_default() {
         let nodes = parse::parse(
             r#"grab {
