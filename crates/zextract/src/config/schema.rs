@@ -11,7 +11,7 @@
 //! source code that today acts as a default eventually moves into
 //! one of these fields.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::config::parse::Node;
 
@@ -188,6 +188,7 @@ fn parse_grab_block(nodes: &[Node], grab: &mut GrabConfig) {
 fn parse_grab_profile(node: &Node) -> Option<GrabProfile> {
     let mut source = GrabSource::Scrollback;
     let mut lines: Option<u32> = None;
+    let mut disabled: HashSet<String> = HashSet::new();
     for child in &node.children {
         match child.name.as_str() {
             "source" => {
@@ -209,6 +210,13 @@ fn parse_grab_profile(node: &Node) -> Option<GrabProfile> {
                     }
                 }
             }
+            "disable" => {
+                for arg in &child.args {
+                    if let Some(s) = arg.as_string() {
+                        disabled.insert(s.to_string());
+                    }
+                }
+            }
             _ => {} // forward-compat
         }
     }
@@ -216,6 +224,7 @@ fn parse_grab_profile(node: &Node) -> Option<GrabProfile> {
         name: node.name.clone(),
         source,
         lines,
+        disabled,
     })
 }
 
@@ -297,26 +306,31 @@ impl Default for GrabConfig {
                     name: "quick".to_string(),
                     source: GrabSource::Scrollback,
                     lines: Some(150),
+                    disabled: HashSet::new(),
                 },
                 GrabProfile {
                     name: "deep".to_string(),
                     source: GrabSource::Scrollback,
                     lines: Some(1500),
+                    disabled: HashSet::new(),
                 },
                 GrabProfile {
                     name: "viewport".to_string(),
                     source: GrabSource::Viewport,
                     lines: None,
+                    disabled: HashSet::new(),
                 },
                 GrabProfile {
                     name: "full".to_string(),
                     source: GrabSource::Scrollback,
                     lines: None,
+                    disabled: HashSet::new(),
                 },
                 GrabProfile {
                     name: "tab-scan".to_string(),
                     source: GrabSource::Tab,
                     lines: Some(150),
+                    disabled: HashSet::new(),
                 },
             ],
         }
@@ -329,6 +343,11 @@ pub struct GrabProfile {
     pub source: GrabSource,
     /// `None` = unbounded (full scrollback).
     pub lines: Option<u32>,
+    /// Pattern type tags (built-in) or custom pattern names disabled for
+    /// this profile only. Merged with `PatternsConfig::disabled` at
+    /// extraction time. Built-in tags: url file diag sha ipv4 ipv6 uuid
+    /// quoted cmd secret. Custom patterns are matched by their name.
+    pub disabled: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -369,6 +388,11 @@ pub struct PatternsConfig {
     pub command: CommandPatternConfig,
     pub secret: SecretPatternConfig,
     pub custom: Vec<CustomPattern>,
+    /// Pattern type tags (built-in) or custom pattern names that are
+    /// globally disabled regardless of grab profile. Built-in tags:
+    /// url file diag sha ipv4 ipv6 uuid quoted cmd secret.
+    /// Custom patterns are matched by their name field.
+    pub disabled: HashSet<String>,
 }
 
 /// Built-in command-pattern tuning, under `patterns { command { ... } }`.
@@ -450,6 +474,14 @@ pub struct CustomPattern {
 
 fn parse_patterns_block(nodes: &[Node], patterns: &mut PatternsConfig) {
     for pat_node in nodes {
+        if pat_node.name == "disable" {
+            for arg in &pat_node.args {
+                if let Some(s) = arg.as_string() {
+                    patterns.disabled.insert(s.to_string());
+                }
+            }
+            continue;
+        }
         if pat_node.name == "command" {
             for child in &pat_node.children {
                 if child.name == "flag_anchored" {
@@ -915,6 +947,48 @@ mod tests {
     }
 
     #[test]
+    fn grab_profile_inline_semicolon_separated() {
+        // KDL requires newlines OR semicolons to separate sibling nodes.
+        // Whitespace alone does NOT separate them — `source "s" lines 5`
+        // on one line parses `lines` as a third arg of `source`, not a
+        // separate child, so lines stays None. This test documents the
+        // correct single-line form (semicolons) and guards the multi-line
+        // form that the DEFAULT_CONFIG template now uses.
+        let nodes = parse::parse(
+            r#"grab {
+                profiles {
+                    quick { source "scrollback"; lines 200 }
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.grab.profiles[0].lines, Some(200));
+        assert_eq!(config.grab.profiles[0].source, GrabSource::Scrollback);
+    }
+
+    #[test]
+    fn grab_profile_inline_no_semicolon_loses_lines() {
+        // Regression guard: without semicolons, `lines N` is absorbed as
+        // an extra arg of `source` and the profile gets lines=None.
+        // This behaviour is spec-correct KDL; the config template must
+        // use multi-line format so users don't hit this silently.
+        let nodes = parse::parse(
+            r#"grab {
+                profiles {
+                    quick { source "scrollback" lines 200 }
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(
+            config.grab.profiles[0].lines, None,
+            "without semicolons, lines is silently ignored — expected None"
+        );
+    }
+
+    #[test]
     fn grab_unknown_source_keeps_scrollback_default() {
         let nodes = parse::parse(
             r#"grab {
@@ -1355,5 +1429,51 @@ mod tests {
         let config = Config::from_ast(&nodes);
         assert_eq!(config.grab.default_profile, "deep");
         assert_eq!(config.grab.profiles.len(), 5); // defaults preserved
+    }
+
+    #[test]
+    fn patterns_global_disable_parsed() {
+        let nodes = parse::parse(r#"patterns { disable "secret" "ipv6" }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert!(config.patterns.disabled.contains("secret"));
+        assert!(config.patterns.disabled.contains("ipv6"));
+        assert!(!config.patterns.disabled.contains("url"));
+    }
+
+    #[test]
+    fn grab_profile_disable_parsed() {
+        let kdl = r#"grab {
+    profiles {
+        deep {
+            source "scrollback"
+            lines 1500
+            disable "secret" "ipv6"
+        }
+    }
+}"#;
+        let nodes = parse::parse(kdl).unwrap();
+        let config = Config::from_ast(&nodes);
+        let deep = config
+            .grab
+            .profiles
+            .iter()
+            .find(|p| p.name == "deep")
+            .unwrap();
+        assert!(deep.disabled.contains("secret"));
+        assert!(deep.disabled.contains("ipv6"));
+        assert!(!deep.disabled.contains("url"));
+    }
+
+    #[test]
+    fn grab_profile_disable_empty_by_default() {
+        let nodes = parse::parse(r#"grab { default_profile "quick" }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        for p in &config.grab.profiles {
+            assert!(
+                p.disabled.is_empty(),
+                "profile {} should have empty disabled set",
+                p.name
+            );
+        }
     }
 }

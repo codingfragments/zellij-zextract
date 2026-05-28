@@ -20,6 +20,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use regex_lite::Regex;
 
@@ -140,40 +141,122 @@ pub fn type_priority_bonus(ty: MatchType) -> i32 {
 
 /// Run all patterns against `text` and return the combined, deduped,
 /// recency-ordered matches.
+/// Convenience wrapper used by tests. Production code uses [`extract_timed`].
+#[allow(dead_code)]
 pub fn extract(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
-    let mut all: Vec<Match> = Vec::new();
-    all.extend(crate::pattern::url::extract(text));
-    all.extend(crate::pattern::file::extract(text));
-    all.extend(crate::pattern::diagnostic::extract(text));
-    all.extend(crate::pattern::sha::extract(text));
-    all.extend(crate::pattern::ipv4::extract(text));
-    all.extend(crate::pattern::ipv6::extract(text));
-    all.extend(crate::pattern::uuid::extract(text));
-    all.extend(crate::pattern::quoted::extract(text));
-    all.extend(crate::pattern::command::extract(text, &patterns.command));
-    if patterns.command.flag_anchored {
-        all.extend(crate::pattern::command::extract_flag_anchored(
-            text,
-            &patterns.command,
-        ));
-    }
-    if patterns.command.comment_anchored {
-        all.extend(crate::pattern::command::extract_comment_anchored(
-            text,
-            &patterns.command,
-        ));
-    }
-    if patterns.command.extension_anchored {
-        all.extend(crate::pattern::command::extract_extension_anchored(
-            text,
-            &patterns.command,
-        ));
-    }
-    all.extend(crate::pattern::secret::extract(text, &patterns.secret));
-    all.extend(extract_custom(text, patterns));
+    extract_timed(text, patterns).0
+}
 
+/// Per-pattern µs timings returned by [`extract_timed`]. All values are
+/// microseconds; use them for `[zextract]` debug log lines in the caller.
+#[derive(Debug, Default)]
+pub struct ExtractionTimings {
+    pub url_us: u128,
+    pub file_us: u128,
+    pub diagnostic_us: u128,
+    pub sha_us: u128,
+    pub ipv4_us: u128,
+    pub ipv6_us: u128,
+    pub uuid_us: u128,
+    pub quoted_us: u128,
+    pub command_us: u128,
+    pub secret_us: u128,
+    pub custom_us: u128,
+    pub dedup_us: u128,
+    pub total_us: u128,
+}
+
+/// Same as [`extract`] but also returns per-pattern µs timings. Used by the
+/// plugin host to log where time is spent; tests stay on the cheaper `extract`.
+pub fn extract_timed(text: &str, patterns: &PatternsConfig) -> (Vec<Match>, ExtractionTimings) {
+    let t_start = Instant::now();
+    let mut t = ExtractionTimings::default();
+    let mut all: Vec<Match> = Vec::new();
+
+    macro_rules! timed {
+        ($field:ident, $expr:expr) => {{
+            let t0 = Instant::now();
+            let v = $expr;
+            t.$field = t0.elapsed().as_micros();
+            v
+        }};
+    }
+
+    let dis = &patterns.disabled;
+
+    if !dis.contains("url") {
+        all.extend(timed!(url_us, crate::pattern::url::extract(text)));
+    }
+    if !dis.contains("file") {
+        all.extend(timed!(file_us, crate::pattern::file::extract(text)));
+    }
+    if !dis.contains("diag") {
+        all.extend(timed!(
+            diagnostic_us,
+            crate::pattern::diagnostic::extract(text)
+        ));
+    }
+    if !dis.contains("sha") {
+        all.extend(timed!(sha_us, crate::pattern::sha::extract(text)));
+    }
+    if !dis.contains("ipv4") {
+        all.extend(timed!(ipv4_us, crate::pattern::ipv4::extract(text)));
+    }
+    if !dis.contains("ipv6") {
+        all.extend(timed!(ipv6_us, crate::pattern::ipv6::extract(text)));
+    }
+    if !dis.contains("uuid") {
+        all.extend(timed!(uuid_us, crate::pattern::uuid::extract(text)));
+    }
+    if !dis.contains("quote") {
+        all.extend(timed!(quoted_us, crate::pattern::quoted::extract(text)));
+    }
+    if !dis.contains("cmd") {
+        all.extend(timed!(
+            command_us,
+            crate::pattern::command::extract(text, &patterns.command)
+        ));
+        // flag/comment/extension-anchored passes are folded into command_us.
+        if patterns.command.flag_anchored {
+            let t0 = Instant::now();
+            all.extend(crate::pattern::command::extract_flag_anchored(
+                text,
+                &patterns.command,
+            ));
+            t.command_us += t0.elapsed().as_micros();
+        }
+        if patterns.command.comment_anchored {
+            let t0 = Instant::now();
+            all.extend(crate::pattern::command::extract_comment_anchored(
+                text,
+                &patterns.command,
+            ));
+            t.command_us += t0.elapsed().as_micros();
+        }
+        if patterns.command.extension_anchored {
+            let t0 = Instant::now();
+            all.extend(crate::pattern::command::extract_extension_anchored(
+                text,
+                &patterns.command,
+            ));
+            t.command_us += t0.elapsed().as_micros();
+        }
+    }
+    if !dis.contains("secret") {
+        all.extend(timed!(
+            secret_us,
+            crate::pattern::secret::extract(text, &patterns.secret)
+        ));
+    }
+    all.extend(timed!(custom_us, extract_custom(text, patterns)));
+
+    let t0 = Instant::now();
     let pass1 = dedup_keep_latest(all);
-    dedup_by_raw_priority(pass1)
+    let result = dedup_by_raw_priority(pass1);
+    t.dedup_us = t0.elapsed().as_micros();
+
+    t.total_us = t_start.elapsed().as_micros();
+    (result, t)
 }
 
 /// Run user-defined custom patterns from the `patterns { }` config block.
@@ -183,6 +266,9 @@ pub fn extract(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
 fn extract_custom(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
     let mut out = Vec::new();
     for cp in &patterns.custom {
+        if patterns.disabled.contains(&cp.name) {
+            continue;
+        }
         let re = match Regex::new(&cp.regex) {
             Ok(r) => r,
             Err(_) => continue, // invalid regex — skip
@@ -969,5 +1055,38 @@ mod tests {
             .iter()
             .find(|m| m.ty == MatchType::Url && m.label.is_none());
         assert!(url_match.is_some(), "built-in url match should also appear");
+    }
+
+    #[test]
+    fn disabled_url_suppresses_url_matches() {
+        let mut patterns = PatternsConfig::default();
+        patterns.disabled.insert("url".to_string());
+        let text = "see https://example.com for details";
+        let matches = extract(text, &patterns);
+        assert!(
+            matches.iter().all(|m| m.ty != MatchType::Url),
+            "url pattern should be suppressed"
+        );
+    }
+
+    #[test]
+    fn disabled_custom_pattern_suppressed() {
+        use crate::config::schema::CustomPattern;
+        let patterns = PatternsConfig {
+            disabled: ["ticket".to_string()].into_iter().collect(),
+            custom: vec![CustomPattern {
+                name: "ticket".to_string(),
+                regex: "[A-Z]+-[0-9]+".to_string(),
+                ty: "url".to_string(),
+                template: None,
+            }],
+            ..PatternsConfig::default()
+        };
+        let text = "Fixed in PROJ-123";
+        let matches = extract(text, &patterns);
+        assert!(
+            matches.iter().all(|m| m.label.as_deref() != Some("ticket")),
+            "disabled custom pattern should be suppressed"
+        );
     }
 }

@@ -18,16 +18,24 @@ You're watching `cargo run` output and spot a localhost URL in the logs:
 2. The two localhost URLs appear at the top (most recent first).
 3. Navigate to `http://localhost:3000`, press `Enter` → opens in browser.
 
-**Tip:** Wire a dedicated URL-only keybind so the picker opens
-pre-filtered:
+**Tip:** Wire a dedicated URL-only keybind. Use `patterns` to skip
+extraction of secrets, SHAs, etc. entirely — not just hide them from
+the list:
 
 ```kdl
 bind "Alt u" {
     LaunchOrFocusPlugin "file://$HOME/.config/zellij/plugins/zextract.wasm" {
-        floating true; type "url"; preview "on";
+        floating  true;
+        patterns  "url ipv4";   // only these patterns run at extraction time
+        preview   "on";
+        popupTitle "URL picker";
     };
 }
 ```
+
+`type "url"` would also open pre-filtered, but secrets and other types
+would still be extracted in the background. `patterns` skips them
+entirely, which is faster on long scrollback.
 
 ---
 
@@ -129,9 +137,11 @@ patterns {
 ```kdl
 bind "Alt j" {
     LaunchOrFocusPlugin "file://$HOME/.config/zellij/plugins/zextract.wasm" {
-        floating true;
-        type "jira";
-        grab "deep";    // search 1500 lines back
+        floating  true;
+        patterns  "jira url";   // only run jira + url patterns (skip secret/sha/etc.)
+        type      "jira";       // pre-filter list to jira matches on open
+        grab      "deep";       // search 1500 lines back
+        popupTitle "JIRA";
     };
 }
 ```

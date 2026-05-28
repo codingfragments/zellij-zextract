@@ -399,17 +399,19 @@ via `~/.config/zellij/zextract.kdl`.
       - `source "scrollback" | "viewport"` (scrollback includes lines above viewport)
       - `lines N` — how many trailing lines to keep (or `0` / unset for unbounded)
     Default config ships e.g. three profiles:
-      ```
+      ```kdl
       grab {
           default_profile "quick"
           profiles {
-              quick    { source "scrollback"  lines 150  }
-              deep     { source "scrollback"  lines 1500 }
-              viewport { source "viewport"              }
-              full     { source "scrollback"            }
+              quick    { source "scrollback"; lines 150  }
+              deep     { source "scrollback"; lines 1500 }
+              viewport { source "viewport"               }
+              full     { source "scrollback"             }
           }
       }
       ```
+      Note: within a profile block, each key must be on its own line or
+      separated by `;` — whitespace alone does not separate KDL nodes.
     Plus optional `bind "Ctrl 1" profile "quick"` style direct-jump
     bindings (deferred from v1 if too much surface).
   - **Type-preset launch args** (carried over from Phase 6 deferral):
@@ -1031,10 +1033,10 @@ ui {
 grab {
     default_profile "quick"      // profile loaded on picker launch
     profiles {
-        quick    { source "scrollback"  lines 150  }
-        deep     { source "scrollback"  lines 1500 }
-        viewport { source "viewport"              }   // just what's on screen
-        full     { source "scrollback"            }   // unbounded (caveat: extraction cost)
+        quick    { source "scrollback"; lines 150  }
+        deep     { source "scrollback"; lines 1500 }
+        viewport { source "viewport"               }  // just what's on screen
+        full     { source "scrollback"             }  // unbounded (caveat: extraction cost)
     }
 }
 

@@ -66,18 +66,42 @@ must list all the profiles they want.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `source` | string | `"scrollback"` | `"scrollback"` or `"viewport"`. |
+| `source` | string | `"scrollback"` | `"scrollback"`, `"viewport"`, or `"tab"`. |
 | `lines` | integer | *(unbounded)* | Maximum lines to scan. `0` or absent = unbounded. |
+| `disable` | string… | *(none)* | Pattern type tags or custom pattern names to skip for this profile. Merged with the global `patterns { disable … }` list. |
+
+> **KDL syntax note:** each profile property must be on its own line.
+> `quick { source "scrollback" lines 150 }` on a single line silently
+> drops the `lines` limit because KDL treats `lines` as a third argument
+> to `source` rather than a separate key. Use newlines or `;` to separate
+> sibling nodes.
 
 **Example:**
 ```kdl
 grab {
     default_profile "quick"
     profiles {
-        quick    { source "scrollback"  lines 150  }
-        deep     { source "scrollback"  lines 1500 }
-        viewport { source "viewport"               }
-        full     { source "scrollback"             }
+        quick {
+            source "scrollback"
+            lines 150
+        }
+        deep {
+            source "scrollback"
+            lines 1500
+            disable "secret" "ipv6"
+        }
+        viewport {
+            source "viewport"
+        }
+        full {
+            source "scrollback"
+            disable "secret"
+        }
+        tab-scan {
+            source "tab"
+            lines 150
+            disable "secret" "ipv6"
+        }
     }
 }
 ```
@@ -192,8 +216,26 @@ actions {
 
 ## `patterns { }` block
 
-The `patterns` block has two distinct roles: configuring built-in pattern
-behaviour and defining user-defined regex patterns.
+The `patterns` block has three roles: globally disabling patterns, configuring
+built-in pattern behaviour, and defining user-defined regex patterns.
+
+### Global `disable`
+
+```kdl
+patterns {
+    disable "secret" "ipv6"
+}
+```
+
+`disable` accepts one or more type tags (built-in) or custom pattern names.
+Listed patterns are skipped for **every** grab profile. Use per-profile
+`disable` (in `grab { profiles { … } }`) to suppress patterns only for
+expensive profiles like `deep` or `full`.
+
+**Built-in type tags:** `url`, `file`, `diag`, `sha`, `ipv4`, `ipv6`,
+`uuid`, `quote`, `cmd`, `secret`
+
+Custom pattern names match the node name you gave them in `patterns { }`.
 
 ### Built-in pattern tuning
 
@@ -294,6 +336,7 @@ file for that specific keybind launch.
 | `type` | space-separated type tags | Pre-fill query with `#tag` filters. |
 | `preview` | `"on"`, `"off"`, `"always"`, `"never"` | Force preview open or closed, ignoring `ui.preview`. |
 | `grab` | profile name string | Start on a specific grab profile, ignoring `grab.default_profile`. |
+| `patterns` | space-separated type tags / custom names | **Allowlist mode** — only these patterns run. Overrides all `disable` settings (global and per-profile). Use when a keybind should extract a narrow set of types (e.g. `"url ipv4"` for a URL-only picker). |
 | `popupTitle` | string | Override the floating pane title. Default: `"zextract"`. Note: Zellij's own `name` and `title` keys are consumed before they reach the plugin — use `popupTitle` instead. |
 
 **Example:**
@@ -301,7 +344,7 @@ file for that specific keybind launch.
 bind "Alt u" {
     LaunchOrFocusPlugin "file://$HOME/.config/zellij/plugins/zextract.wasm" {
         floating   true;
-        type       "url";
+        patterns   "url ipv4";   // only URL + IPv4 — everything else skipped
         preview    "on";
         popupTitle "URL picker";
     };
@@ -309,9 +352,20 @@ bind "Alt u" {
 bind "Alt j" {
     LaunchOrFocusPlugin "file://$HOME/.config/zellij/plugins/zextract.wasm" {
         floating   true;
-        type       "jira";
+        type       "jira";       // pre-fill filter (patterns not set → normal extraction)
         grab       "deep";
         popupTitle "JIRA";
     };
 }
+bind "F" {
+    LaunchOrFocusPlugin "file://$HOME/.config/zellij/plugins/zextract.wasm" {
+        floating   true;
+        grab       "tab-scan";
+        patterns   "url file cmd";   // skip secret/sha/uuid on tab-wide grabs
+        popupTitle "tab scan";
+        move_to_focused_tab true;
+    };
+}
 ```
+
+> **`type` vs `patterns`:** `type` pre-fills the query filter (user can still backspace and see other types). `patterns` controls which patterns *run at extraction time* — types not listed produce zero matches regardless of what the query says.

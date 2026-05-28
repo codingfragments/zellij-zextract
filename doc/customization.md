@@ -1,7 +1,7 @@
 # Customization guide
 
-How to tailor zextract with `actions { }`, `types { }`, and
-`patterns { }` blocks. See [config-reference.md](config-reference.md)
+How to tailor zextract with `actions { }`, `types { }`, `patterns { }`,
+and `grab { }` blocks. See [config-reference.md](config-reference.md)
 for the complete key listing.
 
 ---
@@ -204,6 +204,77 @@ matching works too: `#ji` resolves to `#jira` if it's unambiguous.
 
 ---
 
+## Disabling patterns
+
+### Global disable
+
+Skip a pattern for every profile and every keybind that doesn't override it:
+
+```kdl
+patterns {
+    disable "ipv6" "uuid"
+}
+```
+
+Built-in type tags: `url`, `file`, `diag`, `sha`, `ipv4`, `ipv6`,
+`uuid`, `quote`, `cmd`, `secret`. Custom pattern names work too.
+
+### Per-profile disable
+
+Disable expensive patterns only on large grabs:
+
+```kdl
+grab {
+    profiles {
+        quick {
+            source "scrollback"
+            lines 150
+        }
+        deep {
+            source "scrollback"
+            lines 1500
+            disable "secret" "ipv6"   // skip on big grabs
+        }
+        full {
+            source "scrollback"
+            disable "secret" "ipv6"
+        }
+    }
+}
+```
+
+Per-profile `disable` is merged with the global list — you can't
+re-enable a globally disabled pattern from a profile.
+
+### Per-keybind allowlist (`patterns`)
+
+For a dedicated picker keybind, use `patterns` instead of `disable`.
+It is an **allowlist**: only the listed patterns run, ignoring all
+`disable` settings entirely.
+
+```kdl
+bind "u" {
+    LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zextract.wasm" {
+        floating   true;
+        patterns   "url ipv4";   // only these two patterns run
+        preview    "on";
+        popupTitle "URL picker";
+    };
+    SwitchToMode "locked"
+}
+```
+
+> **`type` vs `patterns`:**
+> `type "url"` pre-fills the query with `#url` — the user can backspace
+> it away and see everything that was extracted. `patterns "url ipv4"`
+> controls *what gets extracted*: patterns not listed produce zero
+> matches regardless of the query.
+>
+> You can combine both: `patterns "url ipv4"` for extraction scope and
+> `type "url"` to open with the list already filtered to URLs.
+
+---
+
 ## Combining everything
 
 A full config for a team using JIRA, GitHub, and helix:
@@ -242,10 +313,22 @@ patterns {
 grab {
     default_profile "quick"
     profiles {
-        quick    { source "scrollback"  lines 150  }
-        deep     { source "scrollback"  lines 1500 }
-        viewport { source "viewport"               }
-        full     { source "scrollback"             }
+        quick {
+            source "scrollback"
+            lines 150
+        }
+        deep {
+            source "scrollback"
+            lines 1500
+            disable "secret" "ipv6"
+        }
+        viewport {
+            source "viewport"
+        }
+        full {
+            source "scrollback"
+            disable "secret" "ipv6"
+        }
     }
 }
 ```
