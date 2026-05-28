@@ -13,11 +13,24 @@ Add a `tab-scan` profile to your `~/.config/zellij/zextract.kdl`:
 grab {
     default_profile "quick"
     profiles {
-        quick    { source "scrollback"  lines 150  }
-        deep     { source "scrollback"  lines 1500 }
-        viewport { source "viewport"               }
-        full     { source "scrollback"             }
-        tab-scan { source "tab"         lines 150  }
+        quick {
+            source "scrollback"
+            lines 150
+        }
+        deep {
+            source "scrollback"
+            lines 1500
+        }
+        viewport {
+            source "viewport"
+        }
+        full {
+            source "scrollback"
+        }
+        tab-scan {
+            source "tab"
+            lines 150
+        }
     }
 }
 ```

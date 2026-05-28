@@ -69,15 +69,31 @@ must list all the profiles they want.
 | `source` | string | `"scrollback"` | `"scrollback"` or `"viewport"`. |
 | `lines` | integer | *(unbounded)* | Maximum lines to scan. `0` or absent = unbounded. |
 
+> **KDL syntax note:** each profile property must be on its own line.
+> `quick { source "scrollback" lines 150 }` on a single line silently
+> drops the `lines` limit because KDL treats `lines` as a third argument
+> to `source` rather than a separate key. Use newlines or `;` to separate
+> sibling nodes.
+
 **Example:**
 ```kdl
 grab {
     default_profile "quick"
     profiles {
-        quick    { source "scrollback"  lines 150  }
-        deep     { source "scrollback"  lines 1500 }
-        viewport { source "viewport"               }
-        full     { source "scrollback"             }
+        quick {
+            source "scrollback"
+            lines 150
+        }
+        deep {
+            source "scrollback"
+            lines 1500
+        }
+        viewport {
+            source "viewport"
+        }
+        full {
+            source "scrollback"
+        }
     }
 }
 ```
