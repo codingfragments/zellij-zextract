@@ -983,8 +983,7 @@ mod tests {
         .unwrap();
         let config = Config::from_ast(&nodes);
         assert_eq!(
-            config.grab.profiles[0].lines,
-            None,
+            config.grab.profiles[0].lines, None,
             "without semicolons, lines is silently ignored — expected None"
         );
     }
@@ -1434,8 +1433,7 @@ mod tests {
 
     #[test]
     fn patterns_global_disable_parsed() {
-        let nodes =
-            parse::parse(r#"patterns { disable "secret" "ipv6" }"#).unwrap();
+        let nodes = parse::parse(r#"patterns { disable "secret" "ipv6" }"#).unwrap();
         let config = Config::from_ast(&nodes);
         assert!(config.patterns.disabled.contains("secret"));
         assert!(config.patterns.disabled.contains("ipv6"));
@@ -1455,7 +1453,12 @@ mod tests {
 }"#;
         let nodes = parse::parse(kdl).unwrap();
         let config = Config::from_ast(&nodes);
-        let deep = config.grab.profiles.iter().find(|p| p.name == "deep").unwrap();
+        let deep = config
+            .grab
+            .profiles
+            .iter()
+            .find(|p| p.name == "deep")
+            .unwrap();
         assert!(deep.disabled.contains("secret"));
         assert!(deep.disabled.contains("ipv6"));
         assert!(!deep.disabled.contains("url"));
@@ -1466,7 +1469,11 @@ mod tests {
         let nodes = parse::parse(r#"grab { default_profile "quick" }"#).unwrap();
         let config = Config::from_ast(&nodes);
         for p in &config.grab.profiles {
-            assert!(p.disabled.is_empty(), "profile {} should have empty disabled set", p.name);
+            assert!(
+                p.disabled.is_empty(),
+                "profile {} should have empty disabled set",
+                p.name
+            );
         }
     }
 }
