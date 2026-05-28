@@ -500,10 +500,7 @@ impl ZellijPlugin for State {
         // `patterns "url" "ipv4"` (space-separated) — allowlist mode.
         // Only the listed patterns run; all disable configs are ignored.
         if let Some(v) = configuration.get("patterns") {
-            let set: HashSet<String> = v
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect();
+            let set: HashSet<String> = v.split_whitespace().map(|s| s.to_string()).collect();
             if !set.is_empty() {
                 self.launch_patterns = Some(set);
             }
@@ -2675,6 +2672,9 @@ mod tests {
         allowed.insert("url".to_string());
 
         let result = effective_disabled(&base, &HashSet::new(), Some(&allowed));
-        assert!(!result.disabled.contains("url"), "allowlist should re-enable url");
+        assert!(
+            !result.disabled.contains("url"),
+            "allowlist should re-enable url"
+        );
     }
 }
