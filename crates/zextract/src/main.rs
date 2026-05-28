@@ -17,6 +17,8 @@ mod source_pane;
 
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
+use std::time::Instant;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -29,7 +31,7 @@ use zellij_tile::prelude::*;
 
 use crate::action::{DispatchResult, Verb};
 use crate::config::{should_log, Config, LimitsConfig, LogLevel};
-use crate::extract::{Match, MatchType};
+use crate::extract::{ExtractionTimings, Match, MatchType};
 use crate::fuzzy::{FuzzyEngine, ScoredMatch};
 use crate::query::ParsedQuery;
 
@@ -325,6 +327,20 @@ struct State {
     /// incrementing this mod profiles.len() and re-extracting.
     current_grab_profile_index: usize,
     extraction_done: bool,
+    /// Panes queued for incremental tab-scan. Populated at the start of
+    /// a tab extraction; drained one-per-timer-tick so partial results
+    /// appear while scanning continues. Empty in single-pane mode.
+    extraction_queue: VecDeque<zellij_tile::prelude::PaneInfo>,
+    /// Braille spinner frame counter; wraps at 10. Incremented on every
+    /// timer tick while a tab scan is in progress.
+    spinner_tick: u8,
+    /// True while incremental tab extraction is running (queue non-empty
+    /// or first pane just processed). Drives spinner rendering and keeps
+    /// the Timer handler alive.
+    spinner_active: bool,
+    /// (panes_done, panes_total) for the current tab scan; shown next
+    /// to the spinner as "2/5".
+    scan_progress: (usize, usize),
     mode: Mode,
     preview_open: bool,
     /// Per-launch overrides from the keybind `configuration` map.
@@ -380,6 +396,10 @@ impl Default for State {
             own_plugin_id: 0,
             current_grab_profile_index: 0,
             extraction_done: false,
+            extraction_queue: VecDeque::new(),
+            spinner_tick: 0,
+            spinner_active: false,
+            scan_progress: (0, 0),
             mode: Mode::Input,
             preview_open: false,
             launch_preview: None,
@@ -606,9 +626,22 @@ impl ZellijPlugin for State {
                 changed || (was_some && new_source.is_none())
             }
             Event::Key(key) => self.handle_key(key),
-            Event::Timer(_) if self.message.is_some() => {
-                self.message = None;
-                true
+            Event::Timer(_) => {
+                let mut redraw = false;
+                // Incremental tab-scan tick: advance spinner and process the
+                // next queued pane. When the queue drains, finalise extraction.
+                if self.spinner_active {
+                    self.spinner_tick = self.spinner_tick.wrapping_add(1);
+                    self.process_next_queued_pane();
+                    redraw = true;
+                } else if self.message.is_some() {
+                    // Message auto-dismiss only fires when no scan is running;
+                    // while the spinner is active the 3-s timer is deferred
+                    // until extraction finishes.
+                    self.message = None;
+                    redraw = true;
+                }
+                redraw
             }
             _ => false,
         }
@@ -698,6 +731,7 @@ impl State {
     /// via a banner in a later commit; for now we log and degrade.
     fn load_config_from_host(&mut self) {
         let path = "/host/.config/zellij/zextract.kdl";
+        let t0 = Instant::now();
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -720,17 +754,28 @@ impl State {
                 return;
             }
         };
+        let t_read = t0.elapsed();
         match config::parse::parse(&text) {
             Ok(nodes) => {
+                let t1 = Instant::now();
+                let node_count = nodes.len();
                 self.config = Config::from_ast(&nodes);
+                let t_parse = t1.elapsed();
+                let t2 = Instant::now();
+                self.apply_config_after_load();
+                let t_apply = t2.elapsed();
                 plog!(
                     self,
                     LogLevel::Debug,
-                    "config load: OK ({} bytes, {} top-level nodes)",
+                    "config load: OK; bytes={} nodes={} \
+                     | read={}ms parse+build={}ms apply={}ms total={}ms",
                     text.len(),
-                    nodes.len(),
+                    node_count,
+                    t_read.as_millis(),
+                    t_parse.as_millis(),
+                    t_apply.as_millis(),
+                    t0.elapsed().as_millis(),
                 );
-                self.apply_config_after_load();
             }
             Err(e) => {
                 plog!(
@@ -849,7 +894,7 @@ impl State {
 
         // Tab-wide grab is handled by a separate branch below.
         if matches!(profile.source, config::GrabSource::Tab) {
-            self.try_extract_tab(&profile);
+            self.try_extract_tab();
             return;
         }
 
@@ -857,9 +902,11 @@ impl State {
         // is populated. Required for any scrollback-source profile;
         // viewport-only profiles save the extra cost.
         let want_full = matches!(profile.source, config::GrabSource::Scrollback);
+        let t0 = Instant::now();
         let Ok(contents) = get_pane_scrollback(PaneId::Terminal(source), want_full) else {
             return;
         };
+        let t_fetch = t0.elapsed();
 
         let mut all = String::new();
         match profile.source {
@@ -885,6 +932,7 @@ impl State {
             Some(n) => extract::take_recent(&all, n as usize),
             None => all,
         };
+        let t_assemble = t0.elapsed();
 
         plog!(
             self,
@@ -903,7 +951,8 @@ impl State {
             .find(|p| p.id == source)
             .map(pane_display_title)
             .unwrap_or_else(|| format!("pane {source}"));
-        let mut matches = extract::extract(&trimmed, &self.config.patterns);
+        let (mut matches, et) = extract::extract_timed(&trimmed, &self.config.patterns);
+        let t_extract = t0.elapsed();
         for m in &mut matches {
             m.source_pane_id = Some(source);
         }
@@ -916,80 +965,188 @@ impl State {
         plog!(
             self,
             LogLevel::Debug,
-            "extraction done; matches={}",
-            self.matches.len()
+            "extraction done; matches={} | fetch={}ms assemble={}ms extract={}ms total={}ms",
+            self.matches.len(),
+            t_fetch.as_millis(),
+            (t_assemble - t_fetch).as_millis(),
+            (t_extract - t_assemble).as_millis(),
+            t_extract.as_millis(),
         );
+        self.log_extraction_timings(&et);
         self.extraction_done = true;
         self.refilter();
     }
 
-    /// Grab scrollback from every eligible pane on the active tab and
-    /// run extraction over each one. Panes are processed in the order
-    /// already computed by active_tab_panes (last-focused first, then
-    /// left-to-right by position). Failures are skipped silently.
-    fn try_extract_tab(&mut self, profile: &config::GrabProfile) {
+    /// Start an incremental tab-wide extraction. Processes the first pane
+    /// immediately so the list is populated before the first timer tick,
+    /// then queues the remaining panes for one-per-tick processing.
+    /// The caller must NOT set extraction_done — process_next_queued_pane
+    /// does that when the queue drains.
+    fn try_extract_tab(&mut self) {
         if self.active_tab_panes.is_empty() {
             return;
         }
         let panes = self.active_tab_panes.clone();
-        let mut all_matches: Vec<Match> = Vec::new();
-        let mut all_captures: Vec<PaneCapture> = Vec::new();
+        let total = panes.len();
 
-        for pane in &panes {
-            let Ok(contents) = get_pane_scrollback(PaneId::Terminal(pane.id), true) else {
-                plog!(
-                    self,
-                    LogLevel::Debug,
-                    "try_extract_tab: skipping pane {} — scrollback unavailable",
-                    pane.id
-                );
-                continue;
-            };
-            let mut raw = String::new();
-            for line in contents
-                .lines_above_viewport
-                .iter()
-                .chain(contents.viewport.iter())
-            {
-                raw.push_str(line);
-                raw.push('\n');
-            }
-            let trimmed = match profile.lines {
-                Some(n) => extract::take_recent(&raw, n as usize),
-                None => raw,
-            };
-            plog!(
-                self,
-                LogLevel::Debug,
-                "try_extract_tab: pane={} title={:?} lines={} chars={}",
-                pane.id,
-                pane.title,
-                trimmed.lines().count(),
-                trimmed.len(),
-            );
-            let mut matches = extract::extract(&trimmed, &self.config.patterns);
-            for m in &mut matches {
-                m.source_pane_id = Some(pane.id);
-            }
-            all_captures.push(PaneCapture {
-                pane_id: pane.id,
-                title: pane_display_title(pane),
-                text: trimmed,
-            });
-            all_matches.extend(matches);
-        }
+        // Clear previous results and prime the queue.
+        self.matches.clear();
+        self.captured_panes.clear();
+        self.extraction_queue = panes.into_iter().collect();
+        self.scan_progress = (0, total);
+        self.spinner_active = true;
+        self.spinner_tick = 0;
 
         plog!(
             self,
             LogLevel::Debug,
-            "try_extract_tab: done; panes={} total_matches={}",
-            all_captures.len(),
-            all_matches.len()
+            "try_extract_tab: starting incremental scan; panes={}",
+            total
         );
-        self.matches = all_matches;
-        self.captured_panes = all_captures;
-        self.extraction_done = true;
+
+        // Process the first pane synchronously so the list isn't empty on
+        // the first render, then schedule the rest via timer.
+        self.process_next_queued_pane();
+
+        // If there are still panes in the queue, arm the timer for the next
+        // batch. process_next_queued_pane re-arms itself when the queue is
+        // non-empty, so we only need to start the chain here.
+        if self.spinner_active {
+            set_timeout(0.05);
+        }
+    }
+
+    /// Pop one pane from extraction_queue, fetch its scrollback, run
+    /// extract, merge results, and refilter. Schedules the next timer tick
+    /// if more panes remain; finalises extraction when the queue is empty.
+    fn process_next_queued_pane(&mut self) {
+        let Some(pane) = self.extraction_queue.pop_front() else {
+            // Queue drained — shouldn't normally be called in this state,
+            // but handle it cleanly.
+            self.spinner_active = false;
+            self.extraction_done = true;
+            self.refilter();
+            return;
+        };
+
+        let profile = match self
+            .config
+            .grab
+            .profiles
+            .get(self.current_grab_profile_index)
+        {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        let t0 = Instant::now();
+        let Ok(contents) = get_pane_scrollback(PaneId::Terminal(pane.id), true) else {
+            plog!(
+                self,
+                LogLevel::Debug,
+                "try_extract_tab: skipping pane {} — scrollback unavailable",
+                pane.id
+            );
+            // Count as processed even when skipped so progress advances.
+            self.scan_progress.0 += 1;
+            if self.extraction_queue.is_empty() {
+                self.finish_tab_extraction();
+            } else {
+                set_timeout(0.05);
+            }
+            return;
+        };
+        let t_fetch = t0.elapsed();
+
+        let mut raw = String::new();
+        for line in contents
+            .lines_above_viewport
+            .iter()
+            .chain(contents.viewport.iter())
+        {
+            raw.push_str(line);
+            raw.push('\n');
+        }
+        let trimmed = match profile.lines {
+            Some(n) => extract::take_recent(&raw, n as usize),
+            None => raw,
+        };
+        let t_assemble = t0.elapsed();
+
+        let (mut matches, et) = extract::extract_timed(&trimmed, &self.config.patterns);
+        let t_extract = t0.elapsed();
+
+        plog!(
+            self,
+            LogLevel::Debug,
+            "try_extract_tab: pane={} title={:?} lines={} chars={} matches={} \
+             | fetch={}ms assemble={}ms extract={}ms",
+            pane.id,
+            pane.title,
+            trimmed.lines().count(),
+            trimmed.len(),
+            matches.len(),
+            t_fetch.as_millis(),
+            (t_assemble - t_fetch).as_millis(),
+            (t_extract - t_assemble).as_millis(),
+        );
+        self.log_extraction_timings(&et);
+
+        for m in &mut matches {
+            m.source_pane_id = Some(pane.id);
+        }
+        self.captured_panes.push(PaneCapture {
+            pane_id: pane.id,
+            title: pane_display_title(&pane),
+            text: trimmed,
+        });
+        self.matches.extend(matches);
+        self.scan_progress.0 += 1;
+
+        // Show partial results immediately.
         self.refilter();
+
+        if self.extraction_queue.is_empty() {
+            self.finish_tab_extraction();
+        } else {
+            set_timeout(0.05);
+        }
+    }
+
+    fn finish_tab_extraction(&mut self) {
+        plog!(
+            self,
+            LogLevel::Debug,
+            "try_extract_tab: done; panes={} total_matches={}",
+            self.captured_panes.len(),
+            self.matches.len()
+        );
+        self.spinner_active = false;
+        self.extraction_done = true;
+    }
+
+    fn log_extraction_timings(&self, t: &ExtractionTimings) {
+        plog!(
+            self,
+            LogLevel::Debug,
+            "extract timings (µs): url={} file={} diag={} sha={} \
+             ipv4={} ipv6={} uuid={} quoted={} cmd={} secret={} \
+             custom={} dedup={} | total={}µs ({}ms)",
+            t.url_us,
+            t.file_us,
+            t.diagnostic_us,
+            t.sha_us,
+            t.ipv4_us,
+            t.ipv6_us,
+            t.uuid_us,
+            t.quoted_us,
+            t.command_us,
+            t.secret_us,
+            t.custom_us,
+            t.dedup_us,
+            t.total_us,
+            t.total_us / 1000,
+        );
     }
 
     fn handle_key(&mut self, key: KeyWithModifier) -> bool {
@@ -1598,7 +1755,12 @@ impl State {
             .constraints([Constraint::Min(1), Constraint::Length(grab_label_width)])
             .split(area);
 
-        let count_text = if self.matches.is_empty() && !self.extraction_done {
+        const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let count_text = if self.spinner_active {
+            let sp = SPINNER[self.spinner_tick as usize % SPINNER.len()];
+            let (done, total) = self.scan_progress;
+            format!("{sp} {done}/{total}  {}", self.filtered.len())
+        } else if self.matches.is_empty() && !self.extraction_done {
             "(extracting)".to_string()
         } else if self.selected.is_empty() {
             format!("{}/{}", self.filtered.len(), self.matches.len())
