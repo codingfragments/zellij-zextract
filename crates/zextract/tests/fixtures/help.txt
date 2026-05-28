@@ -1,0 +1,45 @@
+$ flint --help
+
+flint v1.4.2 — fast linter for shell scripts
+
+USAGE
+  flint <command> [options] [file...]
+
+COMMANDS
+  check     Lint one or more scripts
+  fix       Auto-fix safe issues in place
+  init      Create a config file
+  hook      Manage git hooks
+  lsp       Start the language server
+
+Run `flint <command> --help` for command-specific flags.
+EXAMPLES
+  Lint a single script and show all warnings:
+    flint check deploy.sh --verbose
+  Lint every shell script in the repo, excluding generated files:
+    flint check src/ --ext sh,bash --exclude src/generated/
+  Auto-fix safe issues in a script (creates a .bak before modifying):
+    flint fix deploy.sh --backup
+  Generate a config with the strict profile as a starting point:
+    flint init --config ~/.config/flint/flint.toml --profile strict
+  Use a project-local config instead of the user config:
+    flint check src/ --config .flint.toml
+  Print only errors, no warnings:
+    flint check src/ --min-severity error
+  Output results as JSON (useful in CI pipelines):
+    flint check src/ --format json > /tmp/flint-report.json
+  Check a script piped from stdin:
+    cat deploy.sh | flint check -
+  Run flint as a pre-commit hook for all staged .sh files:
+    flint hook install --hook pre-commit --ext sh
+  Start the LSP server on a custom socket:
+    flint lsp --socket /tmp/flint.sock
+
+CONFIGURATION
+
+  flint looks for config in this order:
+    $FLINT_CONFIG  →  ~/.config/flint/flint.toml  →  /etc/flint/defaults.toml
+
+  Full rule reference:    https://docs.flint.sh/rules
+  Config file options:    https://docs.flint.sh/config
+  Editor integration:     https://docs.flint.sh/editor-integration

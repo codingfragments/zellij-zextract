@@ -1,0 +1,40 @@
+$ curl -fsSL https://flint.sh/install | sh
+
+  flint v1.4.2 — fast linter for shell scripts
+
+  A zero-dependency linter for POSIX shell scripts. It catches unquoted
+  variables, missing error checks, and bashisms before they reach prod.
+  Release notes: https://blog.flint.sh/releases/v1-4-2
+  Source and issue tracker: https://github.com/flint-sh/flint
+
+Installed files:
+  binary        /usr/local/bin/flint
+  man page      /usr/local/share/man/man1/flint.1
+  completions   /usr/local/share/zsh/site-functions/_flint
+
+Runtime directories:
+  config        ~/.config/flint/flint.toml
+  system config /etc/flint/defaults.toml
+  cache         ~/.cache/flint/
+  log           ~/.local/share/flint/flint.log
+
+Next steps:
+  1. Run the setup wizard to create your user config:
+       flint init --config ~/.config/flint/flint.toml --profile strict
+     Edit ~/.config/flint/flint.toml afterwards to tune severity levels.
+  2. Lint a script to verify the install:
+       flint check /usr/local/bin/flint --verbose
+  3. Add a pre-commit hook:
+       flint hook install --hook pre-commit
+
+Editor integration (Neovim, Helix, VS Code):
+  https://docs.flint.sh/editor-integration
+
+To update, re-run the install command:
+  curl -fsSL https://flint.sh/install | sh
+
+To uninstall (keeps config and cache):
+  flint uninstall
+
+For a full removal including ~/.config/flint/flint.toml and ~/.cache/flint/:
+  flint uninstall --purge
