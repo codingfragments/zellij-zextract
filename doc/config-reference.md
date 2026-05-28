@@ -66,8 +66,9 @@ must list all the profiles they want.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `source` | string | `"scrollback"` | `"scrollback"` or `"viewport"`. |
+| `source` | string | `"scrollback"` | `"scrollback"`, `"viewport"`, or `"tab"`. |
 | `lines` | integer | *(unbounded)* | Maximum lines to scan. `0` or absent = unbounded. |
+| `disable` | string… | *(none)* | Pattern type tags or custom pattern names to skip for this profile. Merged with the global `patterns { disable … }` list. |
 
 > **KDL syntax note:** each profile property must be on its own line.
 > `quick { source "scrollback" lines 150 }` on a single line silently
@@ -87,12 +88,19 @@ grab {
         deep {
             source "scrollback"
             lines 1500
+            disable "secret" "ipv6"
         }
         viewport {
             source "viewport"
         }
         full {
             source "scrollback"
+            disable "secret"
+        }
+        tab-scan {
+            source "tab"
+            lines 150
+            disable "secret" "ipv6"
         }
     }
 }
@@ -208,8 +216,26 @@ actions {
 
 ## `patterns { }` block
 
-The `patterns` block has two distinct roles: configuring built-in pattern
-behaviour and defining user-defined regex patterns.
+The `patterns` block has three roles: globally disabling patterns, configuring
+built-in pattern behaviour, and defining user-defined regex patterns.
+
+### Global `disable`
+
+```kdl
+patterns {
+    disable "secret" "ipv6"
+}
+```
+
+`disable` accepts one or more type tags (built-in) or custom pattern names.
+Listed patterns are skipped for **every** grab profile. Use per-profile
+`disable` (in `grab { profiles { … } }`) to suppress patterns only for
+expensive profiles like `deep` or `full`.
+
+**Built-in type tags:** `url`, `file`, `diag`, `sha`, `ipv4`, `ipv6`,
+`uuid`, `quote`, `cmd`, `secret`
+
+Custom pattern names match the node name you gave them in `patterns { }`.
 
 ### Built-in pattern tuning
 

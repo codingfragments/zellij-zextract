@@ -182,50 +182,72 @@ pub fn extract_timed(text: &str, patterns: &PatternsConfig) -> (Vec<Match>, Extr
         }};
     }
 
-    all.extend(timed!(url_us, crate::pattern::url::extract(text)));
-    all.extend(timed!(file_us, crate::pattern::file::extract(text)));
-    all.extend(timed!(
-        diagnostic_us,
-        crate::pattern::diagnostic::extract(text)
-    ));
-    all.extend(timed!(sha_us, crate::pattern::sha::extract(text)));
-    all.extend(timed!(ipv4_us, crate::pattern::ipv4::extract(text)));
-    all.extend(timed!(ipv6_us, crate::pattern::ipv6::extract(text)));
-    all.extend(timed!(uuid_us, crate::pattern::uuid::extract(text)));
-    all.extend(timed!(quoted_us, crate::pattern::quoted::extract(text)));
-    all.extend(timed!(
-        command_us,
-        crate::pattern::command::extract(text, &patterns.command)
-    ));
-    // flag/comment/extension-anchored passes are folded into command_us.
-    if patterns.command.flag_anchored {
-        let t0 = Instant::now();
-        all.extend(crate::pattern::command::extract_flag_anchored(
-            text,
-            &patterns.command,
-        ));
-        t.command_us += t0.elapsed().as_micros();
+    let dis = &patterns.disabled;
+
+    if !dis.contains("url") {
+        all.extend(timed!(url_us, crate::pattern::url::extract(text)));
     }
-    if patterns.command.comment_anchored {
-        let t0 = Instant::now();
-        all.extend(crate::pattern::command::extract_comment_anchored(
-            text,
-            &patterns.command,
-        ));
-        t.command_us += t0.elapsed().as_micros();
+    if !dis.contains("file") {
+        all.extend(timed!(file_us, crate::pattern::file::extract(text)));
     }
-    if patterns.command.extension_anchored {
-        let t0 = Instant::now();
-        all.extend(crate::pattern::command::extract_extension_anchored(
-            text,
-            &patterns.command,
+    if !dis.contains("diag") {
+        all.extend(timed!(
+            diagnostic_us,
+            crate::pattern::diagnostic::extract(text)
         ));
-        t.command_us += t0.elapsed().as_micros();
     }
-    all.extend(timed!(
-        secret_us,
-        crate::pattern::secret::extract(text, &patterns.secret)
-    ));
+    if !dis.contains("sha") {
+        all.extend(timed!(sha_us, crate::pattern::sha::extract(text)));
+    }
+    if !dis.contains("ipv4") {
+        all.extend(timed!(ipv4_us, crate::pattern::ipv4::extract(text)));
+    }
+    if !dis.contains("ipv6") {
+        all.extend(timed!(ipv6_us, crate::pattern::ipv6::extract(text)));
+    }
+    if !dis.contains("uuid") {
+        all.extend(timed!(uuid_us, crate::pattern::uuid::extract(text)));
+    }
+    if !dis.contains("quote") {
+        all.extend(timed!(quoted_us, crate::pattern::quoted::extract(text)));
+    }
+    if !dis.contains("cmd") {
+        all.extend(timed!(
+            command_us,
+            crate::pattern::command::extract(text, &patterns.command)
+        ));
+        // flag/comment/extension-anchored passes are folded into command_us.
+        if patterns.command.flag_anchored {
+            let t0 = Instant::now();
+            all.extend(crate::pattern::command::extract_flag_anchored(
+                text,
+                &patterns.command,
+            ));
+            t.command_us += t0.elapsed().as_micros();
+        }
+        if patterns.command.comment_anchored {
+            let t0 = Instant::now();
+            all.extend(crate::pattern::command::extract_comment_anchored(
+                text,
+                &patterns.command,
+            ));
+            t.command_us += t0.elapsed().as_micros();
+        }
+        if patterns.command.extension_anchored {
+            let t0 = Instant::now();
+            all.extend(crate::pattern::command::extract_extension_anchored(
+                text,
+                &patterns.command,
+            ));
+            t.command_us += t0.elapsed().as_micros();
+        }
+    }
+    if !dis.contains("secret") {
+        all.extend(timed!(
+            secret_us,
+            crate::pattern::secret::extract(text, &patterns.secret)
+        ));
+    }
     all.extend(timed!(custom_us, extract_custom(text, patterns)));
 
     let t0 = Instant::now();
@@ -244,6 +266,9 @@ pub fn extract_timed(text: &str, patterns: &PatternsConfig) -> (Vec<Match>, Extr
 fn extract_custom(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
     let mut out = Vec::new();
     for cp in &patterns.custom {
+        if patterns.disabled.contains(&cp.name) {
+            continue;
+        }
         let re = match Regex::new(&cp.regex) {
             Ok(r) => r,
             Err(_) => continue, // invalid regex — skip
@@ -1030,5 +1055,38 @@ mod tests {
             .iter()
             .find(|m| m.ty == MatchType::Url && m.label.is_none());
         assert!(url_match.is_some(), "built-in url match should also appear");
+    }
+
+    #[test]
+    fn disabled_url_suppresses_url_matches() {
+        let mut patterns = PatternsConfig::default();
+        patterns.disabled.insert("url".to_string());
+        let text = "see https://example.com for details";
+        let matches = extract(text, &patterns);
+        assert!(
+            matches.iter().all(|m| m.ty != MatchType::Url),
+            "url pattern should be suppressed"
+        );
+    }
+
+    #[test]
+    fn disabled_custom_pattern_suppressed() {
+        use crate::config::schema::CustomPattern;
+        let patterns = PatternsConfig {
+            disabled: ["ticket".to_string()].into_iter().collect(),
+            custom: vec![CustomPattern {
+                name: "ticket".to_string(),
+                regex: "[A-Z]+-[0-9]+".to_string(),
+                ty: "url".to_string(),
+                template: None,
+            }],
+            ..PatternsConfig::default()
+        };
+        let text = "Fixed in PROJ-123";
+        let matches = extract(text, &patterns);
+        assert!(
+            matches.iter().all(|m| m.label.as_deref() != Some("ticket")),
+            "disabled custom pattern should be suppressed"
+        );
     }
 }
