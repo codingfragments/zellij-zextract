@@ -19,7 +19,7 @@
 //! tail = negative).
 
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
 use regex_lite::Regex;
@@ -269,94 +269,90 @@ fn extract_custom(text: &str, patterns: &PatternsConfig) -> Vec<Match> {
         if patterns.disabled.contains(&cp.name) {
             continue;
         }
-        let re = match Regex::new(&cp.regex) {
-            Ok(r) => r,
-            Err(_) => continue, // invalid regex — skip
-        };
-        let ty = MatchType::from_tag(&cp.ty).unwrap_or(MatchType::Url);
-        let mut byte_offset_of_line = 0usize;
-        for line in text.lines() {
-            for caps in re.captures_iter(line) {
-                let full = caps.get(0).unwrap();
-                // If the regex has a capture group, group(1) is `{match}`.
-                // This lets users write patterns like:
-                //   `New Jira ticket : ([A-Z]+-[0-9]+)` — the prefix
-                //   anchors the match but only the ticket ID is captured.
-                // No groups → full match is used (backwards-compatible).
-                let (raw, span_start, span_end) = match caps.get(1) {
-                    Some(g) => (
-                        g.as_str().to_string(),
-                        byte_offset_of_line + g.start(),
-                        byte_offset_of_line + g.end(),
-                    ),
-                    None => (
-                        full.as_str().to_string(),
-                        byte_offset_of_line + full.start(),
-                        byte_offset_of_line + full.end(),
-                    ),
-                };
-                if raw.is_empty() {
-                    continue;
-                }
-                // Build fields for all capture groups:
-                //   {0} = full regex match
-                //   {1} = group 1 (alias: {match}), {2}, {3}, …
-                let mut fields = HashMap::new();
-                let full_str = full.as_str();
-                fields.insert("0".to_string(), full_str.to_string());
-                for i in 1..caps.len() {
-                    if let Some(g) = caps.get(i) {
-                        fields.insert(i.to_string(), g.as_str().to_string());
-                    }
-                }
-                // {match} = group(1) when groups present, else full match.
-                let match_val = caps.get(1).map(|g| g.as_str()).unwrap_or(full_str);
-                fields.insert("match".to_string(), match_val.to_string());
+        out.extend(extract_single_custom(text, cp));
+    }
+    out
+}
 
-                let expanded = match &cp.template {
-                    Some(tmpl) => {
-                        let mut out = tmpl.clone();
-                        for (key, val) in &fields {
-                            out = out.replace(&format!("{{{key}}}"), val);
-                        }
-                        out
-                    }
-                    None => raw.clone(),
-                };
-
-                // `raw` is the canonical copy/dedup value:
-                //   - Template present: the expanded result (the final URL or
-                //     value the user wants to copy). Keeps each unique
-                //     expansion as a distinct entry after dedup.
-                //   - No template: the regex match text (group 1 or full).
-                let raw = if cp.template.is_some() {
-                    expanded.clone()
-                } else {
-                    raw
-                };
-
-                match ty {
-                    MatchType::Url => {
-                        fields.insert("url".to_string(), expanded.clone());
-                    }
-                    MatchType::File => {
-                        fields.insert("file".to_string(), expanded.clone());
-                    }
-                    _ => {}
-                }
-                out.push(Match {
-                    ty,
-                    raw: raw.clone(),
-                    display: expanded,
-                    context: line.to_string(),
-                    span: (span_start, span_end),
-                    fields,
-                    label: Some(cp.name.clone()),
-                    source_pane_id: None,
-                });
+/// Run a single user-defined custom pattern against `text`.
+fn extract_single_custom(text: &str, cp: &crate::config::schema::CustomPattern) -> Vec<Match> {
+    let re = match Regex::new(&cp.regex) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(), // invalid regex — skip
+    };
+    let ty = MatchType::from_tag(&cp.ty).unwrap_or(MatchType::Url);
+    let mut out = Vec::new();
+    let mut byte_offset_of_line = 0usize;
+    for line in text.lines() {
+        for caps in re.captures_iter(line) {
+            let full = caps.get(0).unwrap();
+            // If the regex has a capture group, group(1) is `{match}`.
+            // No groups → full match is used (backwards-compatible).
+            let (raw, span_start, span_end) = match caps.get(1) {
+                Some(g) => (
+                    g.as_str().to_string(),
+                    byte_offset_of_line + g.start(),
+                    byte_offset_of_line + g.end(),
+                ),
+                None => (
+                    full.as_str().to_string(),
+                    byte_offset_of_line + full.start(),
+                    byte_offset_of_line + full.end(),
+                ),
+            };
+            if raw.is_empty() {
+                continue;
             }
-            byte_offset_of_line += line.len() + 1;
+            let mut fields = HashMap::new();
+            let full_str = full.as_str();
+            fields.insert("0".to_string(), full_str.to_string());
+            for i in 1..caps.len() {
+                if let Some(g) = caps.get(i) {
+                    fields.insert(i.to_string(), g.as_str().to_string());
+                }
+            }
+            let match_val = caps.get(1).map(|g| g.as_str()).unwrap_or(full_str);
+            fields.insert("match".to_string(), match_val.to_string());
+
+            let expanded = match &cp.template {
+                Some(tmpl) => {
+                    let mut s = tmpl.clone();
+                    for (key, val) in &fields {
+                        s = s.replace(&format!("{{{key}}}"), val);
+                    }
+                    s
+                }
+                None => raw.clone(),
+            };
+
+            // raw = expanded template when template is present, else regex match.
+            let raw = if cp.template.is_some() {
+                expanded.clone()
+            } else {
+                raw
+            };
+
+            match ty {
+                MatchType::Url => {
+                    fields.insert("url".to_string(), expanded.clone());
+                }
+                MatchType::File => {
+                    fields.insert("file".to_string(), expanded.clone());
+                }
+                _ => {}
+            }
+            out.push(Match {
+                ty,
+                raw: raw.clone(),
+                display: expanded,
+                context: line.to_string(),
+                span: (span_start, span_end),
+                fields,
+                label: Some(cp.name.clone()),
+                source_pane_id: None,
+            });
         }
+        byte_offset_of_line += line.len() + 1;
     }
     out
 }
@@ -369,6 +365,145 @@ pub fn take_recent(text: &str, n: usize) -> String {
     let start = lines.len().saturating_sub(n);
     lines[start..].join("\n")
 }
+
+// ── Pattern-chunked extraction ─────────────────────────────────────────────
+
+/// One unit of work in a pattern-chunked extraction run.
+/// Each variant maps to a single pattern pass; `Custom(i)` indexes into
+/// `PatternsConfig::custom`.
+#[derive(Debug, Clone)]
+pub enum PatternTask {
+    Url,
+    File,
+    Diagnostic,
+    Sha,
+    Ipv4,
+    Ipv6,
+    Uuid,
+    Quoted,
+    Command,
+    Secret,
+    Custom(usize),
+}
+
+impl PatternTask {
+    /// Short display name shown in the progress label.
+    pub fn label<'a>(&'a self, patterns: &'a PatternsConfig) -> &'a str {
+        match self {
+            Self::Url => "url",
+            Self::File => "file",
+            Self::Diagnostic => "diag",
+            Self::Sha => "sha",
+            Self::Ipv4 => "ipv4",
+            Self::Ipv6 => "ipv6",
+            Self::Uuid => "uuid",
+            Self::Quoted => "quote",
+            Self::Command => "cmd",
+            Self::Secret => "secret",
+            Self::Custom(i) => patterns
+                .custom
+                .get(*i)
+                .map(|cp| cp.name.as_str())
+                .unwrap_or("custom"),
+        }
+    }
+}
+
+/// Build the ordered queue of pattern tasks for the given effective config.
+/// Disabled patterns are excluded so `queue.len()` equals the total tick count.
+pub fn build_pattern_queue(patterns: &PatternsConfig) -> VecDeque<PatternTask> {
+    let dis = &patterns.disabled;
+    let mut q = VecDeque::new();
+    if !dis.contains("url") {
+        q.push_back(PatternTask::Url);
+    }
+    if !dis.contains("file") {
+        q.push_back(PatternTask::File);
+    }
+    if !dis.contains("diag") {
+        q.push_back(PatternTask::Diagnostic);
+    }
+    if !dis.contains("sha") {
+        q.push_back(PatternTask::Sha);
+    }
+    if !dis.contains("ipv4") {
+        q.push_back(PatternTask::Ipv4);
+    }
+    if !dis.contains("ipv6") {
+        q.push_back(PatternTask::Ipv6);
+    }
+    if !dis.contains("uuid") {
+        q.push_back(PatternTask::Uuid);
+    }
+    if !dis.contains("quote") {
+        q.push_back(PatternTask::Quoted);
+    }
+    if !dis.contains("cmd") {
+        q.push_back(PatternTask::Command);
+    }
+    if !dis.contains("secret") {
+        q.push_back(PatternTask::Secret);
+    }
+    for (i, cp) in patterns.custom.iter().enumerate() {
+        if !dis.contains(&cp.name) {
+            q.push_back(PatternTask::Custom(i));
+        }
+    }
+    q
+}
+
+/// Run a single pattern task and return its matches.
+/// For `Command`, all enabled sub-passes (flag/comment/extension anchored)
+/// are folded into one call so the caller sees one tick per pattern, not
+/// per sub-pass.
+pub fn run_pattern_task(task: &PatternTask, text: &str, patterns: &PatternsConfig) -> Vec<Match> {
+    match task {
+        PatternTask::Url => crate::pattern::url::extract(text),
+        PatternTask::File => crate::pattern::file::extract(text),
+        PatternTask::Diagnostic => crate::pattern::diagnostic::extract(text),
+        PatternTask::Sha => crate::pattern::sha::extract(text),
+        PatternTask::Ipv4 => crate::pattern::ipv4::extract(text),
+        PatternTask::Ipv6 => crate::pattern::ipv6::extract(text),
+        PatternTask::Uuid => crate::pattern::uuid::extract(text),
+        PatternTask::Quoted => crate::pattern::quoted::extract(text),
+        PatternTask::Command => {
+            let mut out = crate::pattern::command::extract(text, &patterns.command);
+            if patterns.command.flag_anchored {
+                out.extend(crate::pattern::command::extract_flag_anchored(
+                    text,
+                    &patterns.command,
+                ));
+            }
+            if patterns.command.comment_anchored {
+                out.extend(crate::pattern::command::extract_comment_anchored(
+                    text,
+                    &patterns.command,
+                ));
+            }
+            if patterns.command.extension_anchored {
+                out.extend(crate::pattern::command::extract_extension_anchored(
+                    text,
+                    &patterns.command,
+                ));
+            }
+            out
+        }
+        PatternTask::Secret => crate::pattern::secret::extract(text, &patterns.secret),
+        PatternTask::Custom(i) => patterns
+            .custom
+            .get(*i)
+            .map(|cp| extract_single_custom(text, cp))
+            .unwrap_or_default(),
+    }
+}
+
+/// Apply both dedup passes to a raw accumulated match list.
+/// Used by incremental extraction to re-settle the list after each tick.
+pub fn dedup_matches(matches: Vec<Match>) -> Vec<Match> {
+    dedup_by_raw_priority(dedup_keep_latest(matches))
+}
+
+// ── Private helpers ────────────────────────────────────────────────────────
 
 /// Pass 1: dedup by `(type, raw)` keeping the latest occurrence
 /// (largest `span.0`). Returns matches in latest-first order.

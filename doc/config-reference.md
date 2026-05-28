@@ -69,6 +69,7 @@ must list all the profiles they want.
 | `source` | string | `"scrollback"` | `"scrollback"`, `"viewport"`, or `"tab"`. |
 | `lines` | integer | *(unbounded)* | Maximum lines to scan. `0` or absent = unbounded. |
 | `disable` | string… | *(none)* | Pattern type tags or custom pattern names to skip for this profile. Merged with the global `patterns { disable … }` list. |
+| `progress` | bool | `false` | Run one pattern per timer tick (~50 ms each) and show a `LineGauge` progress bar. Matches populate incrementally. Off by default — fast profiles (`quick`, `viewport`) finish before a bar would be visible. Enable for `deep`, `full`, or any profile where extraction takes more than ~300 ms. |
 
 > **KDL syntax note:** each profile property must be on its own line.
 > `quick { source "scrollback" lines 150 }` on a single line silently
@@ -89,6 +90,7 @@ grab {
             source "scrollback"
             lines 1500
             disable "secret" "ipv6"
+            progress true
         }
         viewport {
             source "viewport"
@@ -96,6 +98,7 @@ grab {
         full {
             source "scrollback"
             disable "secret"
+            progress true
         }
         tab-scan {
             source "tab"
