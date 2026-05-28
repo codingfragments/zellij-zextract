@@ -233,11 +233,13 @@ grab {
         deep {
             source "scrollback"
             lines 1500
-            disable "secret" "ipv6"   // skip on big grabs
+            disable "secret" "ipv6"
+            progress true             // per-pattern progress bar
         }
         full {
             source "scrollback"
             disable "secret" "ipv6"
+            progress true
         }
     }
 }
@@ -245,6 +247,21 @@ grab {
 
 Per-profile `disable` is merged with the global list — you can't
 re-enable a globally disabled pattern from a profile.
+
+### Per-profile progress bar
+
+`progress true` switches extraction to one-pattern-per-tick mode and
+shows a `LineGauge` progress bar between the input row and the list.
+Matches appear incrementally as each pattern finishes — you can start
+navigating before the scan completes.
+
+```
+[████████░░░░░░░░]  scanning secret · 5/10 patterns · 42 matches
+```
+
+Enable it on profiles where extraction takes more than ~300 ms — typically
+`deep` (1 500 lines) and `full` (unbounded). Leave it off for `quick`
+and `viewport` where the bar would never be visible.
 
 ### Per-keybind allowlist (`patterns`)
 

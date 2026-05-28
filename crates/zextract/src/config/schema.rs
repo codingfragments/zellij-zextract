@@ -189,6 +189,7 @@ fn parse_grab_profile(node: &Node) -> Option<GrabProfile> {
     let mut source = GrabSource::Scrollback;
     let mut lines: Option<u32> = None;
     let mut disabled: HashSet<String> = HashSet::new();
+    let mut progress = false;
     for child in &node.children {
         match child.name.as_str() {
             "source" => {
@@ -217,6 +218,11 @@ fn parse_grab_profile(node: &Node) -> Option<GrabProfile> {
                     }
                 }
             }
+            "progress" => {
+                if let Some(b) = child.args.first().and_then(|v| v.as_bool()) {
+                    progress = b;
+                }
+            }
             _ => {} // forward-compat
         }
     }
@@ -225,6 +231,7 @@ fn parse_grab_profile(node: &Node) -> Option<GrabProfile> {
         source,
         lines,
         disabled,
+        progress,
     })
 }
 
@@ -307,30 +314,35 @@ impl Default for GrabConfig {
                     source: GrabSource::Scrollback,
                     lines: Some(150),
                     disabled: HashSet::new(),
+                    progress: false,
                 },
                 GrabProfile {
                     name: "deep".to_string(),
                     source: GrabSource::Scrollback,
                     lines: Some(1500),
                     disabled: HashSet::new(),
+                    progress: false,
                 },
                 GrabProfile {
                     name: "viewport".to_string(),
                     source: GrabSource::Viewport,
                     lines: None,
                     disabled: HashSet::new(),
+                    progress: false,
                 },
                 GrabProfile {
                     name: "full".to_string(),
                     source: GrabSource::Scrollback,
                     lines: None,
                     disabled: HashSet::new(),
+                    progress: false,
                 },
                 GrabProfile {
                     name: "tab-scan".to_string(),
                     source: GrabSource::Tab,
                     lines: Some(150),
                     disabled: HashSet::new(),
+                    progress: false,
                 },
             ],
         }
@@ -348,6 +360,10 @@ pub struct GrabProfile {
     /// extraction time. Built-in tags: url file diag sha ipv4 ipv6 uuid
     /// quoted cmd secret. Custom patterns are matched by their name.
     pub disabled: HashSet<String>,
+    /// When true, extraction runs one pattern per timer tick with a
+    /// `LineGauge` progress bar. Off by default — quick/viewport profiles
+    /// finish fast enough that the bar would never be visible.
+    pub progress: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1475,5 +1491,61 @@ mod tests {
                 p.name
             );
         }
+    }
+
+    #[test]
+    fn grab_profile_progress_default_false() {
+        let nodes = parse::parse(r#"grab { default_profile "quick" }"#).unwrap();
+        let config = Config::from_ast(&nodes);
+        for p in &config.grab.profiles {
+            assert!(
+                !p.progress,
+                "profile {} should have progress=false by default",
+                p.name
+            );
+        }
+    }
+
+    #[test]
+    fn grab_profile_progress_parsed_true() {
+        let kdl = r#"grab {
+    profiles {
+        full {
+            source "scrollback"
+            progress true
+        }
+    }
+}"#;
+        let nodes = parse::parse(kdl).unwrap();
+        let config = Config::from_ast(&nodes);
+        let full = config
+            .grab
+            .profiles
+            .iter()
+            .find(|p| p.name == "full")
+            .unwrap();
+        assert!(full.progress);
+    }
+
+    #[test]
+    fn grab_profile_progress_parsed_false_explicit() {
+        let kdl = r#"grab {
+    profiles {
+        quick {
+            source "scrollback"
+            lines 150
+            progress false
+        }
+    }
+}"#;
+        let nodes = parse::parse(kdl).unwrap();
+        let config = Config::from_ast(&nodes);
+        let quick = config
+            .grab
+            .profiles
+            .iter()
+            .find(|p| p.name == "quick")
+            .unwrap();
+        assert!(!quick.progress);
     }
 }
