@@ -3,6 +3,8 @@
 [![CI](https://github.com/codingfragments/zellij-zextract/actions/workflows/ci.yml/badge.svg)](https://github.com/codingfragments/zellij-zextract/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/codingfragments/zellij-zextract)](https://github.com/codingfragments/zellij-zextract/releases/latest)
 
+![zextract demo](doc/zextract-demo.gif)
+
 A [Zellij](https://zellij.dev) plugin that extracts typed matches from your focused pane's scrollback and presents them in a fuzzy-filterable picker with type-aware actions.
 
 Fills the gap left by tmux tools like `extrakto`, `fingers`, and `fzf-links` for Zellij users.
