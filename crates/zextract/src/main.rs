@@ -410,6 +410,12 @@ struct State {
     /// Rows reported by the last `render()` call; used to compute page
     /// size for PageUp/PageDown without re-running layout.
     last_rows: usize,
+    /// True once we've already asked Zellij to grow the float to 95% on
+    /// a too-small render. Prevents an infinite resize loop when even
+    /// 95% of the host terminal isn't large enough to clear the floor.
+    /// Cleared whenever `resize_for_preview` runs (preview toggle,
+    /// config apply) so the safety-net can re-arm.
+    emergency_resize_attempted: bool,
 }
 
 impl Default for State {
@@ -457,6 +463,7 @@ impl Default for State {
             message: None,
             render_buffer: None,
             last_rows: 0,
+            emergency_resize_attempted: false,
         }
     }
 }
@@ -711,9 +718,20 @@ impl ZellijPlugin for State {
             height: rows as u16,
         };
 
-        if cols < 60 || rows < 15 {
+        if cols < 60 || rows < 12 {
+            // Safety-net: if the user's configured float size lands
+            // below the floor (e.g. 70% width on a narrow terminal,
+            // or Zellij's default float height on a short one), ask
+            // Zellij to grow to 95% on each dimension that's too
+            // small. One-shot — if even 95% doesn't clear the floor,
+            // the host terminal really is too small and we just show
+            // the banner.
+            if !self.emergency_resize_attempted {
+                self.emergency_resize_attempted = true;
+                self.grow_to_fit_minimum(cols, rows);
+            }
             let mut local_buf = Buffer::empty(area);
-            Paragraph::new("terminal too small (need ≥60×15)")
+            Paragraph::new("terminal too small (need ≥60×12)")
                 .style(Style::default().fg(Color::DarkGray))
                 .render(area, &mut local_buf);
             render::flush(&local_buf);
@@ -1812,7 +1830,7 @@ impl State {
     /// percent-shaped widths we recenter the x-coordinate so the pane
     /// stays centered as it grows/shrinks; for anything else we just
     /// pass the width through and leave x untouched.
-    fn resize_for_preview(&self) {
+    fn resize_for_preview(&mut self) {
         let w = if self.preview_open {
             &self.config.ui.preview_open_width
         } else {
@@ -1834,6 +1852,50 @@ impl State {
             );
             return;
         };
+        change_floating_panes_coordinates(vec![(PaneId::Plugin(self.own_plugin_id), coords)]);
+        // Re-arm the safety net: if this resize lands the float below
+        // the minimum again, the next render will retry with 95%.
+        self.emergency_resize_attempted = false;
+    }
+
+    /// Last-resort resize when a render comes in below the minimum
+    /// usable size. Grows only the dimension(s) that are too small,
+    /// jumping straight to 95% — between the configured width and the
+    /// terminal edge there's no useful intermediate to try.
+    fn grow_to_fit_minimum(&self, cols: usize, rows: usize) {
+        let need_wider = cols < 60;
+        let need_taller = rows < 12;
+        let new_w = if need_wider { Some("95%".to_string()) } else { None };
+        let new_h = if need_taller { Some("95%".to_string()) } else { None };
+        let new_x = if need_wider {
+            recenter_x_for_width("95%").map(|s| s.to_string())
+        } else {
+            None
+        };
+        let new_y = if need_taller {
+            recenter_x_for_width("95%").map(|s| s.to_string())
+        } else {
+            None
+        };
+        let Some(coords) =
+            FloatingPaneCoordinates::new(new_x, new_y, new_w, new_h, None, None)
+        else {
+            plog!(
+                self,
+                LogLevel::Warn,
+                "emergency resize: failed to build coords"
+            );
+            return;
+        };
+        plog!(
+            self,
+            LogLevel::Info,
+            "emergency resize: rendered {cols}×{rows} below 60×12, growing \
+             {}{}{} to 95%",
+            if need_wider { "width" } else { "" },
+            if need_wider && need_taller { " and " } else { "" },
+            if need_taller { "height" } else { "" }
+        );
         change_floating_panes_coordinates(vec![(PaneId::Plugin(self.own_plugin_id), coords)]);
     }
 
@@ -2615,6 +2677,7 @@ fn recenter_x_for_width(width: &str) -> Option<&'static str> {
     // each render. The defaults exercise just two values.
     match (100 - percent) / 2 {
         0 => Some("0%"),
+        2 => Some("2%"),
         5 => Some("5%"),
         10 => Some("10%"),
         15 => Some("15%"),
@@ -2764,6 +2827,8 @@ mod tests {
         assert_eq!(recenter_x_for_width("80%"), Some("10%"));
         assert_eq!(recenter_x_for_width("50%"), Some("25%"));
         assert_eq!(recenter_x_for_width("100%"), Some("0%"));
+        // 95% is the emergency-resize target.
+        assert_eq!(recenter_x_for_width("95%"), Some("2%"));
     }
 
     #[test]
