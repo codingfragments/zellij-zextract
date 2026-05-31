@@ -10,6 +10,76 @@ Versioning follows [Semantic Versioning](https://semver.org/) (pre-1.0: minor bu
 
 ---
 
+## [0.3.1] — 2026-06-01
+
+### Added
+- **Auto-grow floating pane** — when the rendered area drops below the minimum, the plugin asks Zellij to resize the float to 95% on whichever dimension is too small. One-shot per launch, re-armed on each preview toggle. Fixes the "terminal too small" banner appearing on terminals where the configured float width or Zellij's default float height landed below the floor.
+
+### Changed
+- **Minimum render area** — lowered from 60×15 to 60×12. Banner text updated to match.
+
+### Docs
+- README now embeds the demo GIF.
+
+---
+
+## [0.3.0] — 2026-05-28
+
+### Added
+- **Pattern-chunked progress bar** — slow grab profiles (deep, full) now show a single-row progress bar while patterns run one at a time, so partial results appear while the scan continues.
+- **Per-keybind pattern allowlist** — `patterns "url" "ipv4"` in the `LaunchOrFocusPlugin` configuration block restricts the picker to the listed patterns and ignores all `disable` config. Use to wire dedicated single-type keybinds.
+- **Per-profile and global pattern disable** — `disabled "ipv6" "hex"` at the top of `patterns { ... }` or inside a grab `profile { ... }` block turns off the listed patterns globally or per profile.
+- **Incremental tab extraction** — `source "tab"` now scans panes one-per-timer-tick instead of blocking, surfacing matches progressively. Per-pane timing metrics logged at info.
+
+### Fixed
+- Multi-line format in `DEFAULT_CONFIG` grab profiles (caused a parse error when bootstrapped fresh).
+
+### Docs
+- `disable` and `patterns` allowlist features documented.
+- Inline profile format examples corrected.
+- `progress true` uncommented in the deep/full DEFAULT_CONFIG profiles.
+
+### Tests
+- Installer and help-output fixtures added for pattern coverage.
+
+---
+
+## [0.2.1] — 2026-05-20
+
+### Added
+- **PageUp/PageDown navigation** — works in both Input and List mode, jumps by a viewport-minus-one each tap.
+
+---
+
+## [0.2.0] — 2026-05-19
+
+### Added
+- **Multi-pane tab-wide scrollback grab** — `source "tab"` in a grab profile pulls scrollback from every non-floating, non-plugin pane on the active tab, ranked by recency. Per-pane scrollback caps still apply.
+- **Flag-anchored command detection** — opt-in pattern that catches commands beginning with a long flag (`--help`, `-v`, …) even when no prompt or executable anchor is visible.
+- **Prose-prefix path detection** — file/path matches now survive when prefixed by a phrase like `see file `.
+- **Extension-anchored command pass** — commands ending in a known file extension argument get picked up even when the executable trigger list misses them.
+- **Inline comment handling** — strips `#` and `//` trailing comments from command matches; adds a `comment_anchored` opt-in for commands that appear inside comments.
+- **Trigger list growth** — `zellij` and `tmux` join the exec-anchored trigger list.
+- **Secret entropy check** — Shannon-entropy floor of 3.5 bits/char added to the fallback path so high-frequency tokens (UUIDs already covered by their own pattern, hex blobs, long words) stop matching as secrets.
+- **Configurable rprompt trim threshold** — default 5 spaces; tunable per profile.
+- **Pre-config debug logging** — early events (PaneUpdate, PermissionRequestResult) now log at debug before the config file is read, easing first-load diagnosis.
+
+### Changed
+- **Rust toolchain pinned** to 1.94.1 via `rust-toolchain.toml`, with rustfmt + clippy components included.
+
+### Fixed
+- **Command pattern hardening** — skip comment lines; don't scan past inline `#`/`//` for triggers; strip rprompt and multi-whitespace trailer; enforce 5-char minimum length; reject matches with zero alphabetic characters.
+- **Source pane resolution** — restricted to the active tab; track last-focused non-plugin pane so SSH'd sessions don't grab the wrong scrollback.
+- Clippy lints (`collapsible_match`, `collapse_if_else_branches`, missing `Default` derive on `CommandPatternConfig`).
+
+### Docs
+- Pane & content extraction architecture write-up.
+- Consolidated `docs/` into `doc/`; added built-in patterns reference.
+- `flag_anchored` documented in DEFAULT_CONFIG and config reference.
+- README gains a pattern-detection / false-positives section.
+
+---
+
 ## [0.1.1] — 2026-05-17
 
 ### Added
