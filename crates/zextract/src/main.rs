@@ -2299,8 +2299,11 @@ impl State {
 
         let match_line = line_index_for_span(captured_text, m.span.0);
         let match_line_end = line_index_for_span(captured_text, m.span.1);
-        let start = match_line.saturating_sub(3);
-        let end = (match_line_end + 3).min(lines.len().saturating_sub(1));
+        let inner_height = area.height.saturating_sub(2) as usize;
+        let match_span = (match_line_end - match_line + 1).min(inner_height);
+        let ctx = inner_height.saturating_sub(match_span) / 2;
+        let start = match_line.saturating_sub(ctx);
+        let end = (match_line_end + ctx).min(lines.len().saturating_sub(1));
         let line_num_width = (end + 1).to_string().len();
 
         let dim = Style::default()
