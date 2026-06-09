@@ -1334,12 +1334,13 @@ impl State {
         plog!(
             self,
             LogLevel::Debug,
-            "extract timings (µs): url={} file={} diag={} sha={} \
+            "extract timings (µs): url={} file={} diag={} git={} sha={} \
              ipv4={} ipv6={} uuid={} quoted={} cmd={} secret={} \
              custom={} dedup={} | total={}µs ({}ms)",
             t.url_us,
             t.file_us,
             t.diagnostic_us,
+            t.git_us,
             t.sha_us,
             t.ipv4_us,
             t.ipv6_us,

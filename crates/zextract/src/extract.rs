@@ -158,6 +158,7 @@ pub struct ExtractionTimings {
     pub url_us: u128,
     pub file_us: u128,
     pub diagnostic_us: u128,
+    pub git_us: u128,
     pub sha_us: u128,
     pub ipv4_us: u128,
     pub ipv6_us: u128,
@@ -201,10 +202,7 @@ pub fn extract_timed(text: &str, patterns: &PatternsConfig) -> (Vec<Match>, Extr
         ));
     }
     if !dis.contains("git") {
-        // git has no dedicated timing field — folded into sha_us
-        let t0 = Instant::now();
-        all.extend(crate::pattern::git::extract(text));
-        t.sha_us += t0.elapsed().as_micros();
+        all.extend(timed!(git_us, crate::pattern::git::extract(text)));
     }
     if !dis.contains("sha") {
         all.extend(timed!(sha_us, crate::pattern::sha::extract(text)));
