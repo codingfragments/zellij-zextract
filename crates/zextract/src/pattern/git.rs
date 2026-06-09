@@ -4,8 +4,9 @@
 //! `display` = the oneline representation (hash + subject), for list display.
 //! Default action: Insert.
 //!
-//! Handles `--color` output via ANSI stripping, and `--graph` output
-//! via a prefix that permits `|`, `*`, `/`, `\`, and space before the hash.
+//! Handles `--color` output via ANSI stripping, `--graph` output via a
+//! prefix that permits `|`, `*`, `/`, `\`, and space before the hash, and
+//! bat/less line-number prefixes (`  1  │ `) in pager output.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -27,11 +28,17 @@ fn strip_ansi(text: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// `git log --oneline [--graph]`: optional graph prefix, then hash, then subject.
+/// bat / `less -N` line-number prefix: `  123  │ ` or `  123  | `.
+/// Matched as an optional non-capturing group so both pager and raw output work.
+const BAT_PFX: &str = r"(?:\s*\d+\s*[│|]\s*)?";
+
+/// `git log --oneline [--graph]`: optional pager/graph prefix, then hash, then subject.
 fn oneline_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"^[\|\*\/\\\s]*([0-9a-fA-F]{7,40})\s+(\S.*)$").expect("git oneline regex")
+        // BAT_PFX eats the line-number column; [\|\*\/\\\s]* eats graph chars.
+        let pat = format!(r"^{BAT_PFX}[\|\*\/\\\s]*([0-9a-fA-F]{{7,40}})\s+(\S.*)$");
+        Regex::new(&pat).expect("git oneline regex")
     })
 }
 
@@ -39,12 +46,48 @@ fn oneline_re() -> &'static Regex {
 fn commit_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"^commit ([0-9a-fA-F]{40})\b").expect("git commit regex")
+        let pat = format!(r"^{BAT_PFX}commit ([0-9a-fA-F]{{40}})\b");
+        Regex::new(&pat).expect("git commit regex")
     })
 }
 
 fn has_hex_letter(s: &str) -> bool {
     s.chars().any(|c| matches!(c, 'a'..='f' | 'A'..='F'))
+}
+
+/// Strip a leading bat/less line-number column (`  123  │ `) from a line,
+/// returning the content after it. If no such prefix is present, returns `line`.
+fn strip_bat_prefix(line: &str) -> &str {
+    // Fast path: no box-drawing char and no pipe-that-looks-like-bat.
+    if !line.contains('\u{2502}') && !line.contains("  |") {
+        return line;
+    }
+    // Find the first │ or | that follows only digits and spaces.
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    // Skip leading spaces
+    while i < bytes.len() && bytes[i] == b' ' {
+        i += 1;
+    }
+    // Skip digits
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    // Skip spaces
+    while i < bytes.len() && bytes[i] == b' ' {
+        i += 1;
+    }
+    // Expect │ (3 UTF-8 bytes: 0xE2 0x94 0x82) or ASCII |
+    let rest = &line[i..];
+    let after_sep = if let Some(s) = rest.strip_prefix('\u{2502}') {
+        s
+    } else if let Some(s) = rest.strip_prefix('|') {
+        s
+    } else {
+        return line;
+    };
+    // Skip the single space after the separator
+    after_sep.strip_prefix(' ').unwrap_or(after_sep)
 }
 
 pub fn extract(text: &str) -> Vec<Match> {
@@ -88,11 +131,17 @@ pub fn extract(text: &str) -> Vec<Match> {
                 let hash_match = caps.get(1).unwrap();
                 let span_start = byte_offset + hash_match.start();
                 let span_end = byte_offset + hash_match.end();
-                // Look ahead for the commit subject (first indented non-empty line).
+                // Look ahead for the commit subject (first 4-space-indented non-empty
+                // line). Strip any bat/less line-number prefix first so pager output works.
                 let subject = lines[i + 1..].iter().take(7).find_map(|l| {
-                    let t = l.trim_start();
-                    if !t.is_empty() && l.starts_with("    ") {
-                        Some(t)
+                    let content = strip_bat_prefix(l);
+                    if content.starts_with("    ") {
+                        let t = content.trim_start();
+                        if !t.is_empty() {
+                            Some(t)
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -130,11 +179,19 @@ mod tests {
     use super::*;
 
     fn first_raw(text: &str) -> String {
-        extract(text).into_iter().next().map(|m| m.raw).unwrap_or_default()
+        extract(text)
+            .into_iter()
+            .next()
+            .map(|m| m.raw)
+            .unwrap_or_default()
     }
 
     fn first_display(text: &str) -> String {
-        extract(text).into_iter().next().map(|m| m.display).unwrap_or_default()
+        extract(text)
+            .into_iter()
+            .next()
+            .map(|m| m.display)
+            .unwrap_or_default()
     }
 
     // ── git log --oneline ─────────────────────────────────────────────────
@@ -144,8 +201,14 @@ mod tests {
         let m = extract("f2d1431 docs: backfill CHANGELOG for 0.2.0 through 0.3.1");
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "f2d1431");
-        assert_eq!(m[0].display, "f2d1431 docs: backfill CHANGELOG for 0.2.0 through 0.3.1");
-        assert_eq!(m[0].fields["subject"], "docs: backfill CHANGELOG for 0.2.0 through 0.3.1");
+        assert_eq!(
+            m[0].display,
+            "f2d1431 docs: backfill CHANGELOG for 0.2.0 through 0.3.1"
+        );
+        assert_eq!(
+            m[0].fields["subject"],
+            "docs: backfill CHANGELOG for 0.2.0 through 0.3.1"
+        );
     }
 
     #[test]
@@ -154,7 +217,10 @@ mod tests {
         let m = extract(input);
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].raw, "f2d1431");
-        assert_eq!(m[0].display, "f2d1431 docs: backfill CHANGELOG for 0.2.0 through 0.3.1");
+        assert_eq!(
+            m[0].display,
+            "f2d1431 docs: backfill CHANGELOG for 0.2.0 through 0.3.1"
+        );
     }
 
     #[test]
@@ -171,7 +237,8 @@ mod tests {
 
     #[test]
     fn oneline_graph_colored() {
-        let input = "\x1b[31m|\x1b[m \x1b[31m*\x1b[m \x1b[33mf2d1431\x1b[m docs: backfill CHANGELOG";
+        let input =
+            "\x1b[31m|\x1b[m \x1b[31m*\x1b[m \x1b[33mf2d1431\x1b[m docs: backfill CHANGELOG";
         assert_eq!(first_raw(input), "f2d1431");
         assert_eq!(first_display(input), "f2d1431 docs: backfill CHANGELOG");
     }
@@ -261,6 +328,55 @@ Date:   Mon Jun 1 00:51:06 2026 +0200
     fn no_match_hash_mid_line_without_commit_prefix() {
         // A hash in the middle of a prose line is NOT a git log line.
         let m = extract("see commit abc1234f for details");
-        assert!(m.is_empty(), "mid-line hash without git log structure should not match");
+        assert!(
+            m.is_empty(),
+            "mid-line hash without git log structure should not match"
+        );
+    }
+
+    // ── bat / less -N pager prefix ────────────────────────────────────────
+
+    #[test]
+    fn bat_prefix_full_log() {
+        // bat renders "  1  │ commit <hash>" in the scrollback
+        let input = "   1   \u{2502} commit 350b359525eaf53f214bf6183fc8c446d214565f (HEAD -> master, origin/master, origin/HEAD)\n   2   \u{2502} Author: Stefan Marx <stefan@example.com>\n   3   \u{2502} Date:   Mon Jun 1 00:47:25 2026 +0200\n   4   \u{2502} \n   5   \u{2502}     added small screen fix";
+        let m = extract(input);
+        assert_eq!(m.len(), 1, "got: {m:?}");
+        assert_eq!(m[0].raw, "350b359525eaf53f214bf6183fc8c446d214565f");
+        assert_eq!(m[0].display, "350b359 added small screen fix");
+    }
+
+    #[test]
+    fn bat_prefix_multiple_commits() {
+        let input = "\
+   1   \u{2502} commit 350b359525eaf53f214bf6183fc8c446d214565f (HEAD -> master)
+   2   \u{2502} Author: Stefan Marx <stefan@example.com>
+   3   \u{2502} Date:   Mon Jun 1 00:47:25 2026 +0200
+   4   \u{2502}
+   5   \u{2502}     added small screen fix
+   6   \u{2502}
+   7   \u{2502} commit 8aca6f4ccf33ad36a36e685d5941c3cbd39e70d0
+   8   \u{2502} Author: Stefan Marx <stefan@example.com>
+   9   \u{2502} Date:   Sun May 31 23:03:40 2026 +0200
+  10   \u{2502}
+  11   \u{2502}     added btop config";
+        let m = extract(input);
+        assert_eq!(m.len(), 2, "got: {m:?}");
+        let raws: Vec<_> = m.iter().map(|x| x.raw.as_str()).collect();
+        assert!(raws.contains(&"350b359525eaf53f214bf6183fc8c446d214565f"));
+        assert!(raws.contains(&"8aca6f4ccf33ad36a36e685d5941c3cbd39e70d0"));
+    }
+
+    #[test]
+    fn bat_prefix_oneline() {
+        // bat-prefixed oneline output
+        let input = "   1   \u{2502} f2d1431 docs: backfill CHANGELOG for 0.2.0 through 0.3.1";
+        let m = extract(input);
+        assert_eq!(m.len(), 1, "got: {m:?}");
+        assert_eq!(m[0].raw, "f2d1431");
+        assert_eq!(
+            m[0].display,
+            "f2d1431 docs: backfill CHANGELOG for 0.2.0 through 0.3.1"
+        );
     }
 }

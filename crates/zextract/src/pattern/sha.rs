@@ -230,7 +230,8 @@ Date:   Mon Jun 1 00:51:06 2026 +0200\n\
     #[test]
     fn graph_colored() {
         // Graph output with colors: graph chars may also be colored.
-        let input = "\x1b[31m|\x1b[m \x1b[31m*\x1b[m \x1b[33mf2d1431\x1b[m docs: backfill CHANGELOG";
+        let input =
+            "\x1b[31m|\x1b[m \x1b[31m*\x1b[m \x1b[33mf2d1431\x1b[m docs: backfill CHANGELOG";
         let m = extract(input);
         assert_eq!(m.len(), 1, "got: {m:?}");
         assert_eq!(m[0].raw, "f2d1431");

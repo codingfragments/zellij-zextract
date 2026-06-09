@@ -200,6 +200,12 @@ pub fn extract_timed(text: &str, patterns: &PatternsConfig) -> (Vec<Match>, Extr
             crate::pattern::diagnostic::extract(text)
         ));
     }
+    if !dis.contains("git") {
+        // git has no dedicated timing field — folded into sha_us
+        let t0 = Instant::now();
+        all.extend(crate::pattern::git::extract(text));
+        t.sha_us += t0.elapsed().as_micros();
+    }
     if !dis.contains("sha") {
         all.extend(timed!(sha_us, crate::pattern::sha::extract(text)));
     }
@@ -605,9 +611,9 @@ mod fixture_tests {
     }
 
     #[test]
-    fn git_log_fixture_has_shas() {
+    fn git_log_fixture_has_git_matches() {
         let text = include_str!("../tests/fixtures/git_log.txt");
-        assert!(count_by_type(text, MatchType::Sha) >= 5);
+        assert!(count_by_type(text, MatchType::Git) >= 5);
     }
 
     #[test]

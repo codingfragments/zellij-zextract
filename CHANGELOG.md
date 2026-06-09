@@ -8,6 +8,10 @@ Versioning follows [Semantic Versioning](https://semver.org/) (pre-1.0: minor bu
 
 ## [Unreleased]
 
+### Fixed
+- **Git pattern never fired** — `extract_timed` called every built-in pattern except `git`; git log lines were only matched by the `sha` pattern as a fallback. `MatchType::Git` entries now appear correctly.
+- **Git pattern misses pager output** — bat and `less -N` prepend a line-number column (`  1  │ `) to each line in the scrollback. Both the oneline and full-format `commit` regexes now accept an optional `(?:\s*\d+\s*[│|]\s*)?` prefix, and the subject lookahead in full-format mode strips the prefix before checking the 4-space indent. Raw `git log`, `git log --color`, and bat-paged output all produce `MatchType::Git` matches.
+
 ---
 
 ## [0.3.1] — 2026-06-01
