@@ -2224,7 +2224,7 @@ impl State {
                 let avail = (area.width as usize).saturating_sub(tag_overhead);
                 let use_middle = matches!(
                     m.ty,
-                    MatchType::Url | MatchType::File | MatchType::Diagnostic
+                    MatchType::Url | MatchType::File | MatchType::Diagnostic | MatchType::Git
                 );
                 let display = truncate_display(&m.display, avail, use_middle);
                 spans.extend(highlight_spans(&display, &s.indices));
@@ -2783,6 +2783,7 @@ fn type_color(ty: MatchType) -> Color {
         MatchType::Url => Color::Blue,
         MatchType::File => Color::Green,
         MatchType::Diagnostic => Color::LightRed,
+        MatchType::Git => Color::Yellow,
         MatchType::Sha => Color::Yellow,
         MatchType::Ipv4 => Color::Cyan,
         MatchType::Ipv6 => Color::Cyan,

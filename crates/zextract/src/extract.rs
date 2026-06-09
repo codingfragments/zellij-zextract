@@ -58,6 +58,7 @@ pub enum MatchType {
     Url,
     File,
     Diagnostic,
+    Git,
     Sha,
     Ipv4,
     Ipv6,
@@ -73,6 +74,7 @@ impl MatchType {
             MatchType::Url => "url",
             MatchType::File => "file",
             MatchType::Diagnostic => "diag",
+            MatchType::Git => "git",
             MatchType::Sha => "sha",
             MatchType::Ipv4 => "ipv4",
             MatchType::Ipv6 => "ipv6",
@@ -88,6 +90,7 @@ impl MatchType {
             "url" => Some(Self::Url),
             "file" => Some(Self::File),
             "diag" => Some(Self::Diagnostic),
+            "git" => Some(Self::Git),
             "sha" => Some(Self::Sha),
             "ipv4" => Some(Self::Ipv4),
             "ipv6" => Some(Self::Ipv6),
@@ -113,6 +116,7 @@ pub const TYPE_PRIORITY: &[MatchType] = &[
     MatchType::Diagnostic,
     MatchType::File,
     MatchType::Uuid,
+    MatchType::Git, // wins over bare Sha when hash appears in a git log line
     MatchType::Sha,
     MatchType::Ipv4,
     MatchType::Ipv6,
@@ -376,6 +380,7 @@ pub enum PatternTask {
     Url,
     File,
     Diagnostic,
+    Git,
     Sha,
     Ipv4,
     Ipv6,
@@ -393,6 +398,7 @@ impl PatternTask {
             Self::Url => "url",
             Self::File => "file",
             Self::Diagnostic => "diag",
+            Self::Git => "git",
             Self::Sha => "sha",
             Self::Ipv4 => "ipv4",
             Self::Ipv6 => "ipv6",
@@ -422,6 +428,9 @@ pub fn build_pattern_queue(patterns: &PatternsConfig) -> VecDeque<PatternTask> {
     }
     if !dis.contains("diag") {
         q.push_back(PatternTask::Diagnostic);
+    }
+    if !dis.contains("git") {
+        q.push_back(PatternTask::Git);
     }
     if !dis.contains("sha") {
         q.push_back(PatternTask::Sha);
@@ -461,6 +470,7 @@ pub fn run_pattern_task(task: &PatternTask, text: &str, patterns: &PatternsConfi
         PatternTask::Url => crate::pattern::url::extract(text),
         PatternTask::File => crate::pattern::file::extract(text),
         PatternTask::Diagnostic => crate::pattern::diagnostic::extract(text),
+        PatternTask::Git => crate::pattern::git::extract(text),
         PatternTask::Sha => crate::pattern::sha::extract(text),
         PatternTask::Ipv4 => crate::pattern::ipv4::extract(text),
         PatternTask::Ipv6 => crate::pattern::ipv6::extract(text),

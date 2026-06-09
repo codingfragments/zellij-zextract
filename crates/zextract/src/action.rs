@@ -114,6 +114,7 @@ fn static_allowed_verbs(ty: MatchType) -> &'static [Verb] {
         // them in the menu just creates fragile UX. Edit covers the
         // "do something with the file" case via $EDITOR.
         File | Diagnostic => &[Edit, CopyRaw, Insert],
+        Git => &[Insert, CopyRaw],
         Sha => &[CopyRaw, Insert],
         Ipv4 | Ipv6 => &[CopyRaw, Insert],
         Uuid => &[CopyRaw, Insert],
@@ -185,7 +186,7 @@ fn static_default_verb(ty: MatchType) -> Verb {
     match ty {
         Url => Open,
         Diagnostic => Edit,
-        File | Command | Sha | Ipv4 | Ipv6 | Uuid | QuotedString | Secret => Insert,
+        File | Command | Git | Sha | Ipv4 | Ipv6 | Uuid | QuotedString | Secret => Insert,
     }
 }
 

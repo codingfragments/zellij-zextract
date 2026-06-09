@@ -7,6 +7,7 @@
 pub mod command;
 pub mod diagnostic;
 pub mod file;
+pub mod git;
 pub mod ipv4;
 pub mod ipv6;
 pub mod quoted;
