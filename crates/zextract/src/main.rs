@@ -1334,12 +1334,13 @@ impl State {
         plog!(
             self,
             LogLevel::Debug,
-            "extract timings (µs): url={} file={} diag={} sha={} \
+            "extract timings (µs): url={} file={} diag={} git={} sha={} \
              ipv4={} ipv6={} uuid={} quoted={} cmd={} secret={} \
              custom={} dedup={} | total={}µs ({}ms)",
             t.url_us,
             t.file_us,
             t.diagnostic_us,
+            t.git_us,
             t.sha_us,
             t.ipv4_us,
             t.ipv6_us,
@@ -1865,8 +1866,16 @@ impl State {
     fn grow_to_fit_minimum(&self, cols: usize, rows: usize) {
         let need_wider = cols < 60;
         let need_taller = rows < 12;
-        let new_w = if need_wider { Some("95%".to_string()) } else { None };
-        let new_h = if need_taller { Some("95%".to_string()) } else { None };
+        let new_w = if need_wider {
+            Some("95%".to_string())
+        } else {
+            None
+        };
+        let new_h = if need_taller {
+            Some("95%".to_string())
+        } else {
+            None
+        };
         let new_x = if need_wider {
             recenter_x_for_width("95%").map(|s| s.to_string())
         } else {
@@ -1877,8 +1886,7 @@ impl State {
         } else {
             None
         };
-        let Some(coords) =
-            FloatingPaneCoordinates::new(new_x, new_y, new_w, new_h, None, None)
+        let Some(coords) = FloatingPaneCoordinates::new(new_x, new_y, new_w, new_h, None, None)
         else {
             plog!(
                 self,
@@ -1893,7 +1901,11 @@ impl State {
             "emergency resize: rendered {cols}×{rows} below 60×12, growing \
              {}{}{} to 95%",
             if need_wider { "width" } else { "" },
-            if need_wider && need_taller { " and " } else { "" },
+            if need_wider && need_taller {
+                " and "
+            } else {
+                ""
+            },
             if need_taller { "height" } else { "" }
         );
         change_floating_panes_coordinates(vec![(PaneId::Plugin(self.own_plugin_id), coords)]);
@@ -2224,7 +2236,7 @@ impl State {
                 let avail = (area.width as usize).saturating_sub(tag_overhead);
                 let use_middle = matches!(
                     m.ty,
-                    MatchType::Url | MatchType::File | MatchType::Diagnostic
+                    MatchType::Url | MatchType::File | MatchType::Diagnostic | MatchType::Git
                 );
                 let display = truncate_display(&m.display, avail, use_middle);
                 spans.extend(highlight_spans(&display, &s.indices));
@@ -2783,6 +2795,7 @@ fn type_color(ty: MatchType) -> Color {
         MatchType::Url => Color::Blue,
         MatchType::File => Color::Green,
         MatchType::Diagnostic => Color::LightRed,
+        MatchType::Git => Color::Yellow,
         MatchType::Sha => Color::Yellow,
         MatchType::Ipv4 => Color::Cyan,
         MatchType::Ipv6 => Color::Cyan,
