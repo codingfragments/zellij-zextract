@@ -8,6 +8,13 @@ Versioning follows [Semantic Versioning](https://semver.org/) (pre-1.0: minor bu
 
 ## [Unreleased]
 
+---
+
+## [0.4.0] — 2026-06-10
+
+### Changed
+- **Preview fills available height** — the context window around a match now derives from the live panel height instead of a hardcoded 3-line constant. Context lines are split evenly above and below the full match span, so the preview always uses all available vertical space. Multi-line matches are handled correctly; matches larger than the viewport show no padding rather than clipping context. Resize events are handled for free since `area` is passed fresh on every render.
+
 ### Fixed
 - **Git pattern never fired** — `extract_timed` called every built-in pattern except `git`; git log lines were only matched by the `sha` pattern as a fallback. `MatchType::Git` entries now appear correctly.
 - **Git pattern misses pager output** — bat and `less -N` prepend a line-number column (`  1  │ `) to each line in the scrollback. Both the oneline and full-format `commit` regexes now accept an optional `(?:\s*\d+\s*[│|]\s*)?` prefix, and the subject lookahead in full-format mode strips the prefix before checking the 4-space indent. Raw `git log`, `git log --color`, and bat-paged output all produce `MatchType::Git` matches.
@@ -166,5 +173,11 @@ First public release. Full v1 feature set.
 - Empty state: "No matches in pane scrollback" with `Alt-g` hint
 - Loading placeholder during async config load
 
-[Unreleased]: https://github.com/codingfragments/zellij-zextract/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/codingfragments/zellij-zextract/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/codingfragments/zellij-zextract/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/codingfragments/zellij-zextract/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/codingfragments/zellij-zextract/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/codingfragments/zellij-zextract/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/codingfragments/zellij-zextract/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/codingfragments/zellij-zextract/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/codingfragments/zellij-zextract/releases/tag/v0.1.0
