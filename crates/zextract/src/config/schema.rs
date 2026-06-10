@@ -787,7 +787,11 @@ impl ColorsConfig {
 
 fn parse_colors_block(nodes: &[Node], colors: &mut ColorsConfig) {
     for node in nodes {
-        let Some(color) = node.args.first().and_then(|v| v.as_string()).and_then(parse_color)
+        let Some(color) = node
+            .args
+            .first()
+            .and_then(|v| v.as_string())
+            .and_then(parse_color)
         else {
             continue;
         };
@@ -1731,7 +1735,10 @@ mod tests {
     #[test]
     fn parse_color_rgb() {
         assert_eq!(parse_color("rgb(255,128,0)"), Some(Color::Rgb(255, 128, 0)));
-        assert_eq!(parse_color("rgb( 10, 20, 30 )"), Some(Color::Rgb(10, 20, 30)));
+        assert_eq!(
+            parse_color("rgb( 10, 20, 30 )"),
+            Some(Color::Rgb(10, 20, 30))
+        );
         assert_eq!(parse_color("rgb(256,0,0)"), None);
     }
 

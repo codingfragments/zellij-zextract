@@ -70,7 +70,6 @@ enum BannerKind {
 /// Source of truth: `crates/zextract/config/zextract.kdl`.
 const DEFAULT_CONFIG: &str = include_str!("../config/zextract.kdl");
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     /// User is editing the query. Plain printable chars type into the
@@ -1843,9 +1842,7 @@ impl State {
             ),
             Mode::List => (
                 "[LIST]",
-                Style::default()
-                    .fg(c.muted)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(c.muted).add_modifier(Modifier::BOLD),
                 Style::default().fg(c.muted),
                 " ",
             ),
@@ -1855,9 +1852,7 @@ impl State {
             Span::styled(self.query.clone(), query_style),
             Span::styled(
                 cursor_glyph,
-                Style::default()
-                    .fg(c.muted)
-                    .add_modifier(Modifier::DIM),
+                Style::default().fg(c.muted).add_modifier(Modifier::DIM),
             ),
             Span::raw("   "),
         ];
@@ -1873,9 +1868,7 @@ impl State {
         for exc in &self.parsed_query.excludes {
             spans.push(Span::styled(
                 format!("[-{exc}]"),
-                Style::default()
-                    .fg(c.muted)
-                    .add_modifier(Modifier::DIM),
+                Style::default().fg(c.muted).add_modifier(Modifier::DIM),
             ));
             spans.push(Span::raw(" "));
         }
@@ -1883,16 +1876,11 @@ impl State {
             spans.push(Span::raw(" "));
         }
 
-        spans.push(Span::styled(
-            count_text,
-            Style::default().fg(c.muted),
-        ));
+        spans.push(Span::styled(count_text, Style::default().fg(c.muted)));
         spans.push(Span::raw("   "));
         spans.push(Span::styled(
             mode_tag,
-            Style::default()
-                .fg(c.muted)
-                .add_modifier(Modifier::DIM),
+            Style::default().fg(c.muted).add_modifier(Modifier::DIM),
         ));
         Paragraph::new(Line::from(spans))
             .block(Block::default().borders(Borders::ALL).title("zextract"))
@@ -1936,7 +1924,11 @@ impl State {
             self.filtered.len()
         );
         Gauge::default()
-            .gauge_style(Style::default().fg(self.config.colors.accent).bg(self.config.colors.muted))
+            .gauge_style(
+                Style::default()
+                    .fg(self.config.colors.accent)
+                    .bg(self.config.colors.muted),
+            )
             .ratio(ratio)
             .label(label)
             .render(area, buf);
@@ -1994,9 +1986,7 @@ impl State {
                 let gutter = if selected {
                     Span::styled(
                         "● ",
-                        Style::default()
-                            .fg(c.accent)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(c.accent).add_modifier(Modifier::BOLD),
                     )
                 } else {
                     Span::raw("  ")
@@ -2012,9 +2002,7 @@ impl State {
                     let title = truncate_display(raw_title, 15, false);
                     Some(Span::styled(
                         format!("[{title}]  "),
-                        Style::default()
-                            .fg(c.muted)
-                            .add_modifier(Modifier::DIM),
+                        Style::default().fg(c.muted).add_modifier(Modifier::DIM),
                     ))
                 } else {
                     None
@@ -2376,9 +2364,7 @@ fn highlight_spans(display: &str, indices: &[u32], color: Color) -> Vec<Span<'st
         return vec![Span::raw(display.to_string())];
     }
     let hi: HashSet<u32> = indices.iter().copied().collect();
-    let highlight = Style::default()
-        .fg(color)
-        .add_modifier(Modifier::BOLD);
+    let highlight = Style::default().fg(color).add_modifier(Modifier::BOLD);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut current = String::new();
@@ -2578,8 +2564,6 @@ fn pane_display_title(p: &zellij_tile::prelude::PaneInfo) -> String {
         p.title.clone()
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
