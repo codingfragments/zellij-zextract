@@ -94,7 +94,7 @@
 //
 // ── Common theme presets (uncomment one block at a time) ─────────────────
 //
-// Catppuccin Mocha
+// Catppuccin Mocha (dark)
 // colors {
 //     muted          "#585b70"    // Surface2
 //     accent         "#89dceb"    // Sky
@@ -114,6 +114,50 @@
 //     type_quoted    "#a6adc8"    // Subtext1
 //     type_command   "#f5c2e7"    // Pink
 //     type_secret    "#eba0ac"    // Maroon
+// }
+//
+// Catppuccin Macchiato (dark)
+// colors {
+//     muted          "#5b6078"    // Surface2
+//     accent         "#91d7e3"    // Sky
+//     cursor_bg      "#8aadf4"    // Blue
+//     cursor_fg      "#24273a"    // Base (dark bg)
+//     highlight      "#f5a97f"    // Peach
+//     error          "#ed8796"    // Red
+//     fallback_type  "#b8c0e0"    // Subtext1
+//     type_url       "#8aadf4"    // Blue
+//     type_file      "#a6da95"    // Green
+//     type_diag      "#ed8796"    // Red
+//     type_git       "#eed49f"    // Yellow
+//     type_sha       "#f5a97f"    // Peach
+//     type_ipv4      "#91d7e3"    // Sky
+//     type_ipv6      "#7dc4e4"    // Sapphire
+//     type_uuid      "#c6a0f6"    // Mauve
+//     type_quoted    "#b8c0e0"    // Subtext1
+//     type_command   "#f5bde6"    // Pink
+//     type_secret    "#ee99a0"    // Maroon
+// }
+//
+// Catppuccin Latte (light)
+// colors {
+//     muted          "#acb0be"    // Surface2
+//     accent         "#04a5e5"    // Sky
+//     cursor_bg      "#1e66f5"    // Blue
+//     cursor_fg      "#eff1f5"    // Base (light bg)
+//     highlight      "#df8e1d"    // Yellow
+//     error          "#d20f39"    // Red
+//     fallback_type  "#5c5f77"    // Subtext1
+//     type_url       "#1e66f5"    // Blue
+//     type_file      "#40a02b"    // Green
+//     type_diag      "#d20f39"    // Red
+//     type_git       "#df8e1d"    // Yellow
+//     type_sha       "#fe640b"    // Peach
+//     type_ipv4      "#04a5e5"    // Sky
+//     type_ipv6      "#209fb5"    // Sapphire
+//     type_uuid      "#8839ef"    // Mauve
+//     type_quoted    "#6c6f85"    // Subtext0
+//     type_command   "#ea76cb"    // Pink
+//     type_secret    "#e64553"    // Maroon
 // }
 //
 // Tokyo Night

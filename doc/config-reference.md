@@ -83,8 +83,9 @@ Each slot controls the `[tag]` pill in the list and the match highlight in the p
 
 ### Theme presets
 
-Three complete presets are included as commented examples in the bootstrap
-config (`Ctrl-W`): **Catppuccin Mocha**, **Tokyo Night**, and **Gruvbox Dark**.
+Five complete presets are included as commented examples in the bootstrap
+config (`Ctrl-W`): **Catppuccin Mocha**, **Catppuccin Macchiato**,
+**Catppuccin Latte** (light), **Tokyo Night**, and **Gruvbox Dark**.
 
 **Minimal example — change two slots, keep the rest:**
 ```kdl

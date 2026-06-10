@@ -846,7 +846,7 @@ fn parse_color(s: &str) -> Option<Color> {
         return None;
     }
     // ANSI named colors (accept both snake_case and no-separator variants)
-    let norm: String = s.to_ascii_lowercase().replace('_', "").replace('-', "");
+    let norm: String = s.to_ascii_lowercase().replace(['_', '-'], "");
     match norm.as_str() {
         "black" => Some(Color::Black),
         "darkgray" | "darkgrey" => Some(Color::DarkGray),

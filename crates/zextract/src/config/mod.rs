@@ -45,4 +45,4 @@ pub mod schema;
 
 pub use schema::Config;
 pub use schema::{should_log, ActionsConfig, LogLevel, PatternsConfig, TypesConfig};
-pub use schema::{ColorsConfig, GrabSource, LimitsConfig, PreviewDefault};
+pub use schema::{GrabSource, LimitsConfig, PreviewDefault};
