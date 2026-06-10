@@ -2306,9 +2306,7 @@ impl State {
         let end = (match_line_end + ctx).min(lines.len().saturating_sub(1));
         let line_num_width = (end + 1).to_string().len();
 
-        let dim = Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::DIM);
+        let dim = Style::default().fg(Color::DarkGray);
         let gutter_style = Style::default().fg(Color::DarkGray);
         let match_gutter_style = Style::default()
             .fg(Color::Yellow)
