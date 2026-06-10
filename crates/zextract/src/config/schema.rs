@@ -13,6 +13,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use ratatui::style::Color;
+
 use crate::config::parse::Node;
 
 /// Result of loading the user's config file, or all-defaults if no
@@ -22,6 +24,7 @@ use crate::config::parse::Node;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub ui: UiConfig,
+    pub colors: ColorsConfig,
     pub grab: GrabConfig,
     pub limits: LimitsConfig,
     pub types: TypesConfig,
@@ -34,6 +37,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             ui: UiConfig::default(),
+            colors: ColorsConfig::default(),
             grab: GrabConfig::default(),
             limits: LimitsConfig::default(),
             types: TypesConfig::default(),
@@ -59,6 +63,7 @@ impl Config {
         for node in nodes {
             match node.name.as_str() {
                 "ui" => parse_ui_block(&node.children, &mut config.ui),
+                "colors" => parse_colors_block(&node.children, &mut config.colors),
                 "grab" => parse_grab_block(&node.children, &mut config.grab),
                 "limits" => parse_limits_block(&node.children, &mut config.limits),
                 "types" => parse_types_block(&node.children, &mut config.types),
@@ -698,6 +703,169 @@ impl LogLevel {
 /// `Error` emits whenever current >= Error.
 pub fn should_log(target: LogLevel, current: LogLevel) -> bool {
     target != LogLevel::Off && target <= current
+}
+
+// ---- Colors ----
+
+/// All UI colors with defaults matching the hard-coded values before this
+/// config section existed. Omitting `colors { }` entirely produces identical
+/// output to prior versions.
+#[derive(Debug, Clone)]
+pub struct ColorsConfig {
+    // UI chrome
+    pub muted: Color,
+    pub accent: Color,
+    pub cursor_bg: Color,
+    pub cursor_fg: Color,
+    pub highlight: Color,
+    pub error: Color,
+    pub fallback_type: Color,
+    // per-type colors
+    pub type_url: Color,
+    pub type_file: Color,
+    pub type_diag: Color,
+    pub type_git: Color,
+    pub type_sha: Color,
+    pub type_ipv4: Color,
+    pub type_ipv6: Color,
+    pub type_uuid: Color,
+    pub type_quoted: Color,
+    pub type_command: Color,
+    pub type_secret: Color,
+}
+
+impl Default for ColorsConfig {
+    fn default() -> Self {
+        Self {
+            muted: Color::DarkGray,
+            accent: Color::Cyan,
+            cursor_bg: Color::Blue,
+            cursor_fg: Color::Black,
+            highlight: Color::Yellow,
+            error: Color::LightRed,
+            fallback_type: Color::Gray,
+            type_url: Color::Blue,
+            type_file: Color::Green,
+            type_diag: Color::LightRed,
+            type_git: Color::Yellow,
+            type_sha: Color::Yellow,
+            type_ipv4: Color::Cyan,
+            type_ipv6: Color::Cyan,
+            type_uuid: Color::Magenta,
+            type_quoted: Color::Gray,
+            type_command: Color::LightMagenta,
+            type_secret: Color::LightRed,
+        }
+    }
+}
+
+impl ColorsConfig {
+    pub fn for_type(&self, ty: crate::extract::MatchType) -> Color {
+        match ty {
+            crate::extract::MatchType::Url => self.type_url,
+            crate::extract::MatchType::File => self.type_file,
+            crate::extract::MatchType::Diagnostic => self.type_diag,
+            crate::extract::MatchType::Git => self.type_git,
+            crate::extract::MatchType::Sha => self.type_sha,
+            crate::extract::MatchType::Ipv4 => self.type_ipv4,
+            crate::extract::MatchType::Ipv6 => self.type_ipv6,
+            crate::extract::MatchType::Uuid => self.type_uuid,
+            crate::extract::MatchType::QuotedString => self.type_quoted,
+            crate::extract::MatchType::Command => self.type_command,
+            crate::extract::MatchType::Secret => self.type_secret,
+        }
+    }
+
+    pub fn for_tag(&self, tag: &str) -> Color {
+        crate::extract::TYPE_PRIORITY
+            .iter()
+            .find(|t| t.tag() == tag)
+            .map(|&t| self.for_type(t))
+            .unwrap_or(self.fallback_type)
+    }
+}
+
+fn parse_colors_block(nodes: &[Node], colors: &mut ColorsConfig) {
+    for node in nodes {
+        let Some(color) = node
+            .args
+            .first()
+            .and_then(|v| v.as_string())
+            .and_then(parse_color)
+        else {
+            continue;
+        };
+        match node.name.as_str() {
+            "muted" => colors.muted = color,
+            "accent" => colors.accent = color,
+            "cursor_bg" => colors.cursor_bg = color,
+            "cursor_fg" => colors.cursor_fg = color,
+            "highlight" => colors.highlight = color,
+            "error" => colors.error = color,
+            "fallback_type" => colors.fallback_type = color,
+            "type_url" => colors.type_url = color,
+            "type_file" => colors.type_file = color,
+            "type_diag" => colors.type_diag = color,
+            "type_git" => colors.type_git = color,
+            "type_sha" => colors.type_sha = color,
+            "type_ipv4" => colors.type_ipv4 = color,
+            "type_ipv6" => colors.type_ipv6 = color,
+            "type_uuid" => colors.type_uuid = color,
+            "type_quoted" => colors.type_quoted = color,
+            "type_command" => colors.type_command = color,
+            "type_secret" => colors.type_secret = color,
+            _ => {} // forward-compat
+        }
+    }
+}
+
+/// Parse a color string into a ratatui `Color`.
+/// Accepts ANSI names (`"dark_gray"`, `"light_red"`, …), hex (`"#rrggbb"`),
+/// and `rgb(r,g,b)` notation.
+fn parse_color(s: &str) -> Option<Color> {
+    let s = s.trim();
+    // hex #rrggbb
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            return Some(Color::Rgb(r, g, b));
+        }
+        return None;
+    }
+    // rgb(r,g,b)
+    if let Some(inner) = s.strip_prefix("rgb(").and_then(|t| t.strip_suffix(')')) {
+        let parts: Vec<&str> = inner.split(',').collect();
+        if parts.len() == 3 {
+            let r = parts[0].trim().parse::<u8>().ok()?;
+            let g = parts[1].trim().parse::<u8>().ok()?;
+            let b = parts[2].trim().parse::<u8>().ok()?;
+            return Some(Color::Rgb(r, g, b));
+        }
+        return None;
+    }
+    // ANSI named colors (accept both snake_case and no-separator variants)
+    let norm: String = s.to_ascii_lowercase().replace(['_', '-'], "");
+    match norm.as_str() {
+        "black" => Some(Color::Black),
+        "darkgray" | "darkgrey" => Some(Color::DarkGray),
+        "gray" | "grey" => Some(Color::Gray),
+        "white" => Some(Color::White),
+        "red" => Some(Color::Red),
+        "green" => Some(Color::Green),
+        "yellow" => Some(Color::Yellow),
+        "blue" => Some(Color::Blue),
+        "magenta" => Some(Color::Magenta),
+        "cyan" => Some(Color::Cyan),
+        "lightred" | "lightcoral" => Some(Color::LightRed),
+        "lightgreen" => Some(Color::LightGreen),
+        "lightyellow" => Some(Color::LightYellow),
+        "lightblue" => Some(Color::LightBlue),
+        "lightmagenta" | "lightpurple" => Some(Color::LightMagenta),
+        "lightcyan" => Some(Color::LightCyan),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1547,5 +1715,44 @@ mod tests {
             .find(|p| p.name == "quick")
             .unwrap();
         assert!(!quick.progress);
+    }
+
+    #[test]
+    fn parse_color_named() {
+        assert_eq!(parse_color("dark_gray"), Some(Color::DarkGray));
+        assert_eq!(parse_color("light_red"), Some(Color::LightRed));
+        assert_eq!(parse_color("cyan"), Some(Color::Cyan));
+        assert_eq!(parse_color("unknown_color"), None);
+    }
+
+    #[test]
+    fn parse_color_hex() {
+        assert_eq!(parse_color("#ff8800"), Some(Color::Rgb(0xff, 0x88, 0x00)));
+        assert_eq!(parse_color("#000000"), Some(Color::Rgb(0, 0, 0)));
+        assert_eq!(parse_color("#gggggg"), None);
+    }
+
+    #[test]
+    fn parse_color_rgb() {
+        assert_eq!(parse_color("rgb(255,128,0)"), Some(Color::Rgb(255, 128, 0)));
+        assert_eq!(
+            parse_color("rgb( 10, 20, 30 )"),
+            Some(Color::Rgb(10, 20, 30))
+        );
+        assert_eq!(parse_color("rgb(256,0,0)"), None);
+    }
+
+    #[test]
+    fn colors_block_overrides_defaults() {
+        let kdl = r#"colors {
+    muted "gray"
+    type_url "rgb(100,200,50)"
+}"#;
+        let nodes = parse::parse(kdl).unwrap();
+        let config = Config::from_ast(&nodes);
+        assert_eq!(config.colors.muted, Color::Gray);
+        assert_eq!(config.colors.type_url, Color::Rgb(100, 200, 50));
+        // untouched slots stay at default
+        assert_eq!(config.colors.accent, Color::Cyan);
     }
 }
