@@ -37,6 +37,89 @@ ui {
 
 ---
 
+## `colors { }` block
+
+Overrides the UI color palette. All keys are optional — omit the block
+entirely (or any individual key) to keep the built-in defaults. Defaults
+reproduce the appearance of versions before `0.5.0` exactly.
+
+### Color value format
+
+| Format | Example | Notes |
+|---|---|---|
+| ANSI name | `"dark_gray"` | `black`, `dark_gray`, `gray`, `white`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `light_red`, `light_green`, `light_yellow`, `light_blue`, `light_magenta`, `light_cyan` |
+| Hex | `"#rrggbb"` | Six-digit lowercase hex |
+| RGB | `"rgb(r,g,b)"` | Decimal 0–255 per channel |
+
+### UI chrome slots
+
+| Key | Default | Used for |
+|---|---|---|
+| `muted` | `"dark_gray"` | Gutters, hints, secondary text, context lines in preview, empty-state messages |
+| `accent` | `"cyan"` | Selected-item `●` bullet; progress bar fill |
+| `cursor_bg` | `"blue"` | List cursor row background; input-mode `▍` marker |
+| `cursor_fg` | `"black"` | List cursor row foreground — must contrast `cursor_bg` |
+| `highlight` | `"yellow"` | Fuzzy-match character highlights, preview match-line `▸`, banner border, warning label, footer status messages |
+| `error` | `"light_red"` | Config parse-error label in the banner |
+| `fallback_type` | `"gray"` | Color for custom pattern types that have no explicit `type_*` slot |
+
+### Type color slots
+
+Each slot controls the `[tag]` pill in the list and the match highlight in the preview.
+
+| Key | Default | Type tag |
+|---|---|---|
+| `type_url` | `"blue"` | `url` |
+| `type_file` | `"green"` | `file` |
+| `type_diag` | `"light_red"` | `diag` |
+| `type_git` | `"yellow"` | `git` |
+| `type_sha` | `"yellow"` | `sha` |
+| `type_ipv4` | `"cyan"` | `ipv4` |
+| `type_ipv6` | `"cyan"` | `ipv6` |
+| `type_uuid` | `"magenta"` | `uuid` |
+| `type_quoted` | `"gray"` | `quote` |
+| `type_command` | `"light_magenta"` | `cmd` |
+| `type_secret` | `"light_red"` | `secret` |
+
+### Theme presets
+
+Three complete presets are included as commented examples in the bootstrap
+config (`Ctrl-W`): **Catppuccin Mocha**, **Tokyo Night**, and **Gruvbox Dark**.
+
+**Minimal example — change two slots, keep the rest:**
+```kdl
+colors {
+    cursor_bg  "#7aa2f7"   // Tokyo Night blue
+    cursor_fg  "#1a1b26"   // Tokyo Night background
+}
+```
+
+**Full default listing (ANSI palette):**
+```kdl
+colors {
+    muted          "dark_gray"
+    accent         "cyan"
+    cursor_bg      "blue"
+    cursor_fg      "black"
+    highlight      "yellow"
+    error          "light_red"
+    fallback_type  "gray"
+    type_url       "blue"
+    type_file      "green"
+    type_diag      "light_red"
+    type_git       "yellow"
+    type_sha       "yellow"
+    type_ipv4      "cyan"
+    type_ipv6      "cyan"
+    type_uuid      "magenta"
+    type_quoted    "gray"
+    type_command   "light_magenta"
+    type_secret    "light_red"
+}
+```
+
+---
+
 ## `grab { }` block
 
 Controls how much scrollback is captured. `g` (List mode) or `Alt-g`
