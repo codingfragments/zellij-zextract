@@ -10,6 +10,20 @@ Versioning follows [Semantic Versioning](https://semver.org/) (pre-1.0: minor bu
 
 ---
 
+## [0.4.1] — 2026-06-11
+
+### Added
+- **Configurable color palette** — new `colors { }` KDL block with 18 named slots: 7 UI chrome slots (`muted`, `accent`, `cursor_bg`, `cursor_fg`, `highlight`, `error`, `fallback_type`) and 11 per-type slots (`type_url`, `type_file`, `type_diag`, `type_git`, `type_sha`, `type_ipv4`, `type_ipv6`, `type_uuid`, `type_quoted`, `type_command`, `type_secret`). Values accept ANSI names (`dark_gray`, `light_red`, …), hex (`#rrggbb`), or `rgb(r,g,b)`. Omitting the block or any key keeps the existing defaults — appearance is unchanged with no config.
+- **Theme presets** — bootstrap config (`Ctrl-W`) includes five complete commented-out presets: Catppuccin Mocha, Catppuccin Macchiato, Catppuccin Latte (light), Tokyo Night, Gruvbox Dark.
+
+### Fixed
+- **Preview context lines used `Modifier::DIM`** — `DIM` (SGR 2) is honored inconsistently across terminal emulators; some halve the color, others ignore it entirely. Removed from context lines; `DarkGray` (or the configured `muted` slot) alone provides sufficient visual separation without cross-terminal variance.
+
+### Internal
+- Bootstrap config extracted from an inline raw string in `main.rs` into `crates/zextract/config/zextract.kdl` and loaded via `include_str!`. Single source of truth; `main.rs` −226 lines.
+
+---
+
 ## [0.4.0] — 2026-06-10
 
 ### Changed
